@@ -1,0 +1,1 @@
+-- Natural regeneration disabled. Healing is explicit through gear and revives.

@@ -1,0 +1,2 @@
+-- Disabled 2026-10-07: the like/favorite reminder offered tokens for liking and favoriting, which Roblox does not allow.
+-- Kept as an inert script so nothing that looks for it breaks.

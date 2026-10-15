@@ -1,0 +1,12 @@
+# Roblox place files (the full game) - never upload
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+# Studio backup copies of scripts
+src/ServerStorage/*Backup*/
+src/ServerStorage/*Before*/
+# Secrets, if any are ever added
+.env
+*.key
+secrets.*
