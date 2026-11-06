@@ -7,6 +7,14 @@ local Audio=require(game.ServerScriptService.GameplayAudioServer)
 local Batch3=require(script:WaitForChild('ItemBatch3'))
 local Batch4=require(script:WaitForChild('ItemBatch4'))
 local Batch5=require(script:WaitForChild('ItemBatch5'))
+local Batch8=require(script:WaitForChild('ItemBatch8')) -- CursedB 2026-10-27
+local Batch9=require(script:WaitForChild('ItemBatch9'))
+local Batch6=require(script:WaitForChild('ItemBatch6')) -- CursedA 2026-10-27
+local Batch7=require(script:WaitForChild('ItemBatch7')) -- CursedA 2026-10-27
+local Puzzle=require(script:WaitForChild('PuzzleBatch')) -- World/CatShelf puzzle frame (WorldA)
+local MonsterBatch=require(script:WaitForChild('MonsterBatch')) -- Monsters build 2026-10-27: Watch Gnome, Tip Bell, Cuckoo Clock
+local DraftEffects=require(script:WaitForChild('ItemDraftEffects'))
+local Halloween=require(script:WaitForChild('HalloweenBatch')) -- World/BrewCauldron (WorldA): event-gated cauldron
 local M={}
 local wear={}
 local perfumed={}
@@ -57,13 +65,22 @@ local function startWear(p,m,role,offset,duration)
  wear[m]={owner=p,ends=now+duration,role=role}
  local head=p.Character and p.Character:FindFirstChild('Head');if head then m:PivotTo(head.CFrame*offset)end
 end
-function M.Configure(drop,clear,setParts,restore)detach=drop;clearHold=clear;parts=setParts;restoreHold=restore;Batch4.Configure(drop,clear,setParts);Batch5.Configure(drop,clear,setParts)end
+function M.Configure(drop,clear,setParts,restore)detach=drop;clearHold=clear;parts=setParts;restoreHold=restore;Batch4.Configure(drop,clear,setParts);Batch5.Configure(drop,clear,setParts);Batch8.Configure(drop,clear,setParts);Batch9.Configure(drop,clear,setParts);Batch6.Configure(drop,clear,setParts);Batch7.Configure(drop,clear,setParts);Puzzle.Configure(drop,clear,setParts);Halloween.Configure(drop,clear,setParts)end
+M.HalloweenInit=Halloween.Init;M.HalloweenPlace=Halloween.PlaceCauldron -- CursedItemsServer (World/BrewCauldron)
+M.PuzzleInit=Puzzle.Init;M.PuzzleRestock=Puzzle.Restock;M.PuzzleClue=Puzzle.Clue -- CursedItemsServer (World/CatShelf etc.)
 function M.CanSpawn(id)return Batch4.CanSpawn(id)end
+-- Halloween event loot gate (CursedItemsServer.eligibleItems): ItemBatch8 owns the rule (CursedB 2026-10-27).
+function M.HalloweenLive()return Batch8.HalloweenLive()end
 function M.CanRemove(p,m)return Batch4.CanRemove(p,m)end
 function M.RemoveAttached(p,m)return Batch4.RemoveAttached(p,m)end
-function M.IsWorn(m)return wear[m]~=nil or Batch5.IsWorn(m)end
+function M.AdoptCompanion(p,m)return Batch7.AdoptCompanion(p,m)end
+function M.HalloweenLive()return Halloween.Live()end
+function M.IsWorn(m)return wear[m]~=nil or Batch5.IsWorn(m)or Batch6.IsWorn(m)or Batch7.IsWorn(m)end
 function M.ReleaseHold(p,m)
+ DraftEffects.Release(p,m)
  if Batch5.ReleaseHold(p,m)then return true end
+ if Batch6.ReleaseHold(p,m)then return true end
+ if Batch7.ReleaseHold(p,m)then return true end
  if not wear[m] or wear[m].owner~=p then return false end
  clearHold(m)
  -- Setting the party hat down takes it off now (Heartbeat ends the wear next frame), blower included.
@@ -93,9 +110,15 @@ local function endWear(m,s)
  end
 end
 function M.Pickup(p,m)
+ DraftEffects.Pickup(p,m)
  Batch3.Pickup(p,m)
  Batch4.Pickup(p,m)
- Batch5.Pickup(p,m)
+ Batch5.Pickup(p,m);Batch8.Pickup(p,m);Batch9.Pickup(p,m)
+ Batch6.Pickup(p,m)
+ Batch7.Pickup(p,m)
+ Puzzle.Pickup(p,m)
+ Halloween.Pickup(p,m)
+ MonsterBatch.Pickup(p,m)
  local id=m:GetAttribute('ItemId');local now=workspace:GetServerTimeNow()
  if id=='RainCloud'and not m:GetAttribute('Dehydrated')then
   startWear(p,m,'Cloud',CFrame.new(0,3.65,0),5)
@@ -267,17 +290,29 @@ local function removeMakeup(p)
  if orig then lips:SetAttribute('MakeupOrigColor',nil);lips.Color=orig end
 end
 function M.ClearPlayer(p)
+ DraftEffects.ClearPlayer(p)
  Batch3.ClearPlayer(p)
  Batch4.ClearPlayer(p)
- Batch5.ClearPlayer(p)
+ Batch5.ClearPlayer(p);Batch8.ClearPlayer(p);Batch9.ClearPlayer(p)
+ Batch6.ClearPlayer(p)
+ Batch7.ClearPlayer(p)
+ Puzzle.ClearPlayer(p)
+ Halloween.ClearPlayer(p)
+ MonsterBatch.ClearPlayer(p)
  perfumed[p]=nil;nextWhistle[p]=nil;douseEyes(p);dropFx(beeFx,p);dropFx(frostFx,p);removeMakeup(p);removeStain(p);crunchNext[p]=nil
  for m,s in pairs(wear)do if s.owner==p then endWear(m,s)end end
  for _,m in ipairs(folder:GetChildren())do if m:GetAttribute('CosmeticOwner')==p.UserId then m:Destroy()end end
  for _,key in ipairs({'GumChewStart','TeethStained','BrokenTeeth','DollUntil','SnailUntil','CrunchUntil','MadeUp','BeeSwollen','HotSauceUntil','FrozenUntil','BeesUntil','PepperSquint','CryingUntil','PerfumedLevel','PerfumeAuraStart','PerfumeSprayStart','PerfumeSprayUntil','WhistleUntil','PartyBlowerUntil','PartyBlowerStart'})do p:SetAttribute(key,nil)end
 end
 function M.ClearLevel()
+ DraftEffects.ClearLevel()
  Batch4.ClearLevel()
- Batch5.ClearLevel()
+ Batch5.ClearLevel();Batch8.ClearLevel();Batch9.ClearLevel()
+ Batch6.ClearLevel()
+ Batch7.ClearLevel()
+ Puzzle.ClearLevel()
+ Halloween.ClearLevel()
+ MonsterBatch.ClearLevel()
  for m,s in pairs(wear)do endWear(m,s)end
  for _,p in ipairs(Players:GetPlayers())do M.ClearPlayer(p)end
  folder:ClearAllChildren()
@@ -297,6 +332,7 @@ end
 local acc=0
 Run.Heartbeat:Connect(function(dt)
  local now=workspace:GetServerTimeNow()
+ DraftEffects.Frame(dt,now)
  for m,s in pairs(wear)do
   if not m.Parent then wear[m]=nil
   elseif now>=s.ends or not living(s.owner)then endWear(m,s)
@@ -313,6 +349,8 @@ Run.Heartbeat:Connect(function(dt)
   end
  end
  acc+=dt;if acc<.25 then return end;acc=0
+ DraftEffects.Tick(now)
+ Halloween.Tick(now)
  -- Crying onion: sob only while it is in hand; the short lease lapses within half a second of letting go.
  local interactive=itemModels()
  if interactive then

@@ -194,3 +194,155 @@ Run:BindToRenderStep('CursedCoopVisuals',Enum.RenderPriority.Camera.Value+8,func
  for m,sound in pairs(whispers)do if not present[m]then pcall(function()sound:Stop();sound:Destroy()end);whispers[m]=nil end end
 end)
 player.CharacterRemoving:Connect(function()destroyApparition();stopWhisper();clearViews()end)
+-- Stuck co-op items: the wearer can call for help; teammates always see who is stuck and how far away they are.
+-- ItemBatch4 sets Player.CursedAttach (item id) while an item is stuck; CursedItemsServer stamps Player.HelpCallAt on a call.
+local CAS=game:GetService('ContextActionService')
+local UIS=game:GetService('UserInputService')
+local Catalog=require(RS:WaitForChild('CursedCatalog'))
+local InputHints=require(RS:WaitForChild('InputHints'))
+local cursedEvent=RS:WaitForChild('CursedEvent')
+local HELP_LOUD,HELP_COOLDOWN=6,4 -- seconds a call stays loud for teammates; seconds between calls (server enforces the same)
+local PULL_REACH=10 -- studs: ItemBatch4 REACH, a teammate must be this close to pull it off
+local STUDS_PER_METRE=1/.28
+local GOLD,RED,CREAM,INK=Color3.fromRGB(255,214,60),Color3.fromRGB(255,90,80),Color3.fromRGB(244,236,210),Color3.fromRGB(14,8,24)
+local function itemName(id)local e=Catalog.Items[id];return e and e.name or 'cursed item'end
+local function stuckId(p)local id=p:GetAttribute('CursedAttach');return type(id)=='string'and id~=''and id or nil end
+local function aliveChar(p)
+ local c=p.Character;local h=c and c:FindFirstChildOfClass('Humanoid')
+ return c and h and h.Health>0 and c or nil
+end
+local function label(parent,name,text,size,color)
+ local l=Instance.new('TextLabel');l.Name=name;l.BackgroundTransparency=1;l.Font=Enum.Font.FredokaOne;l.Text=text;l.TextColor3=color or CREAM
+ l.TextStrokeColor3=INK;l.TextStrokeTransparency=.2;l.TextScaled=true;l.Parent=parent
+ local cap=Instance.new('UITextSizeConstraint');cap.MaxTextSize=size;cap.MinTextSize=9;cap.Parent=l
+ return l
+end
+local helpGui=Instance.new('ScreenGui');helpGui.Name='CoopHelpHud';helpGui.ResetOnSpawn=false;helpGui.DisplayOrder=40;helpGui.ScreenInsets=Enum.ScreenInsets.CoreUISafeInsets;helpGui.Parent=player:WaitForChild('PlayerGui')
+-- Wearer: a card above the carry text with one big button.
+local card=Instance.new('Frame');card.Name='StuckCard';card.AnchorPoint=Vector2.new(.5,1);card.Position=UDim2.new(.5,0,1,-150);card.Size=UDim2.fromOffset(340,112)
+card.BackgroundColor3=Color3.fromRGB(26,16,30);card.BackgroundTransparency=.12;card.Visible=false;card.Parent=helpGui
+Instance.new('UICorner',card).CornerRadius=UDim.new(0,14)
+local cardStroke=Instance.new('UIStroke');cardStroke.Color=GOLD;cardStroke.Thickness=2;cardStroke.Parent=card
+local cardTitle=label(card,'Title','',20,GOLD);cardTitle.Position=UDim2.fromOffset(12,8);cardTitle.Size=UDim2.new(1,-24,0,24)
+local cardBody=label(card,'Body','A teammate has to pull it off. Call them over!',15);cardBody.Position=UDim2.fromOffset(12,34);cardBody.Size=UDim2.new(1,-24,0,18)
+local callButton=Instance.new('TextButton');callButton.Name='CallForHelp';callButton.AnchorPoint=Vector2.new(.5,0);callButton.Position=UDim2.new(.5,0,0,60);callButton.Size=UDim2.new(1,-24,0,44)
+callButton.BackgroundColor3=GOLD;callButton.AutoButtonColor=true;callButton.BorderSizePixel=0;callButton.Font=Enum.Font.FredokaOne;callButton.TextSize=22;callButton.TextColor3=INK;callButton.Text='CALL FOR HELP';callButton.Parent=card
+Instance.new('UICorner',callButton).CornerRadius=UDim.new(0,12)
+-- Teammates: a banner at the top while a call is fresh.
+local banner=Instance.new('Frame');banner.Name='HelpBanner';banner.AnchorPoint=Vector2.new(.5,0);banner.Position=UDim2.new(.5,0,0,96);banner.Size=UDim2.fromOffset(420,62)
+banner.BackgroundColor3=Color3.fromRGB(60,12,14);banner.BackgroundTransparency=.1;banner.Visible=false;banner.Parent=helpGui
+Instance.new('UICorner',banner).CornerRadius=UDim.new(0,14)
+local bannerStroke=Instance.new('UIStroke');bannerStroke.Color=RED;bannerStroke.Thickness=2;bannerStroke.Parent=banner
+local bannerTitle=label(banner,'Title','',22,GOLD);bannerTitle.Position=UDim2.fromOffset(12,6);bannerTitle.Size=UDim2.new(1,-24,0,26)
+local bannerBody=label(banner,'Body','',15);bannerBody.Position=UDim2.fromOffset(12,34);bannerBody.Size=UDim2.new(1,-24,0,20)
+local lastCall=-math.huge
+local function callForHelp()
+ if not stuckId(player)or not aliveChar(player)then return end
+ local now=os.clock();if now-lastCall<HELP_COOLDOWN then return end
+ lastCall=now;cursedEvent:FireServer('help')
+ Audio.Play('UiOpen')
+end
+callButton.Activated:Connect(callForHelp)
+local bound=false
+local function bindCall(on)
+ if on==bound then return end;bound=on
+ if on then CAS:BindActionAtPriority('CoopCallHelp',function(_,st)
+  if UIS:GetFocusedTextBox()then return Enum.ContextActionResult.Pass end
+  if st==Enum.UserInputState.Begin then callForHelp()end;return Enum.ContextActionResult.Sink
+ end,false,2100,Enum.KeyCode.H,Enum.KeyCode.DPadLeft)
+ else CAS:UnbindAction('CoopCallHelp')end
+end
+-- Markers over stuck teammates: name, item, distance; through walls so they can be found.
+local markers={} -- [Player]={gui,title,detail}
+local heardCall={} -- [Player]=HelpCallAt already announced
+local function dropMarker(p)local m=markers[p];if m then m.gui:Destroy();markers[p]=nil end end
+-- A screen label that follows the stuck player's head every frame (BillboardGuis made on the client did not draw
+-- reliably here); when they are off screen or behind you it sits on the screen edge in their direction.
+local function marker(p,head)
+ local m=markers[p]
+ if m and m.head==head then return m end
+ dropMarker(p)
+ local g=Instance.new('Frame');g.Name='HelpMarker_'..p.Name;g.AnchorPoint=Vector2.new(.5,1);g.BackgroundTransparency=1;g.Size=UDim2.fromOffset(220,74);g.Parent=helpGui
+ local icon=label(g,'Icon','!',40,GOLD);icon.Position=UDim2.new(.5,-16,0,0);icon.Size=UDim2.fromOffset(32,34)
+ local title=label(g,'Title','',18,GOLD);title.Position=UDim2.fromOffset(0,32);title.Size=UDim2.new(1,0,0,22)
+ local detail=label(g,'Detail','',14);detail.Position=UDim2.fromOffset(0,54);detail.Size=UDim2.new(1,0,0,18)
+ m={gui=g,icon=icon,title=title,detail=detail,head=head};markers[p]=m
+ return m
+end
+local EDGE=70 -- pixels kept from the screen edge when the stuck player is off screen
+Run.RenderStepped:Connect(function()
+ local cam=workspace.CurrentCamera;if not cam then return end
+ local vp=cam.ViewportSize;local inset=helpGui.AbsolutePosition
+ for _,m in pairs(markers) do
+  local head=m.head
+  if head and head.Parent then
+   local sp=cam:WorldToViewportPoint(head.Position+Vector3.new(0,6,0)) -- clear of the player's own title tags (they reach ~5 studs up)
+   local x,y=sp.X,sp.Y
+   if sp.Z<0 then x,y=vp.X-x,vp.Y-y end -- behind the camera: mirror so the edge arrow points the right way
+   local off=sp.Z<0 or x<EDGE or x>vp.X-EDGE or y<EDGE or y>vp.Y-EDGE
+   if off then
+    local cx,cy=vp.X/2,vp.Y/2;local dx,dy=x-cx,y-cy
+    if math.abs(dx)<1e-3 and math.abs(dy)<1e-3 then dy=1 end
+    local s=math.min((cx-EDGE)/math.max(math.abs(dx),1e-3),(cy-EDGE)/math.max(math.abs(dy),1e-3))
+    x,y=cx+dx*s,cy+dy*s
+   end
+   -- while the help banner shows, keep the label (anchored at its bottom) below it
+   if banner.Visible then y=math.max(y,banner.AbsolutePosition.Y+banner.AbsoluteSize.Y+8+m.gui.AbsoluteSize.Y) end
+   m.gui.Position=UDim2.fromOffset(x-inset.X,y-inset.Y)
+  end
+ end
+end)
+local helpTick=0
+Run.Heartbeat:Connect(function(dt)
+ helpTick+=dt;if helpTick<.1 then return end;helpTick=0
+ local now=workspace:GetServerTimeNow();local clock=os.clock()
+ local inMission=player:GetAttribute('MissionActive')==true
+ -- Wearer card.
+ local mine=inMission and aliveChar(player)and stuckId(player)
+ card.Visible=mine~=nil and mine~=false
+ bindCall(card.Visible)
+ -- Sit above the first-game tutorial tip when it shows (it covers the bottom centre on small screens).
+ if card.Visible then
+  local tut=player.PlayerGui:FindFirstChild('FirstGameTutorial');local tip=tut and tut.Enabled and tut:FindFirstChild('Tip')
+  if tip and tip:IsA('GuiObject') and tip.Visible and tip.AbsoluteSize.Y>0 then
+   local y=tip.AbsolutePosition.Y-helpGui.AbsolutePosition.Y-10
+   card.Position=UDim2.new(.5,0,0,math.max(card.AbsoluteSize.Y+8,y))
+  else card.Position=UDim2.new(.5,0,1,-150) end
+ end
+ if card.Visible then
+  cardTitle.Text=string.upper(itemName(mine))..' IS STUCK ON YOU!'
+  local device=InputHints.Get()
+  local key=device=='pad'and'  (D-PAD LEFT)'or device=='kb'and'  (H)'or''
+  local wait=HELP_COOLDOWN-(clock-lastCall)
+  callButton.Text=wait>0 and'HELP CALLED!'or'CALL FOR HELP'..key
+  callButton.BackgroundColor3=wait>0 and Color3.fromRGB(150,140,110)or GOLD
+  cardStroke.Transparency=.5+.5*math.sin(clock*5)
+ end
+ -- Teammates who are stuck.
+ local myRoot=player.Character and player.Character:FindFirstChild('HumanoidRootPart')
+ local loudest,loudAt=nil,-math.huge
+ local selfTest=Run:IsStudio()and script:GetAttribute('HelpMarkSelf')==true -- Studio-only: show your own marker for solo tests
+ for _,p in ipairs(Players:GetPlayers())do
+  local id=inMission and(p~=player or selfTest)and stuckId(p)
+  local c=id and aliveChar(p);local head=c and c:FindFirstChild('Head')
+  if not head then dropMarker(p);heardCall[p]=nil;continue end
+  local m=marker(p,head)
+  local callAt=p:GetAttribute('HelpCallAt')or -math.huge
+  local loud=now-callAt<HELP_LOUD
+  local d=myRoot and(myRoot.Position-head.Position).Magnitude
+  m.title.Text=p.DisplayName..(loud and' NEEDS HELP!'or' is stuck')
+  m.detail.Text=d and d<=PULL_REACH and'GRAB IT TO PULL IT OFF'or(itemName(id)..(d and('  |  '..math.floor(d/STUDS_PER_METRE+.5)..'m')or''))
+  local pulse=loud and(1+.18*math.abs(math.sin(clock*6)))or 1
+  m.gui.Size=UDim2.fromOffset(220*pulse,74*pulse)
+  m.icon.TextColor3=loud and RED or GOLD
+  if loud and callAt>loudAt then loudest,loudAt=p,callAt end
+  if loud and heardCall[p]~=callAt then heardCall[p]=callAt;Audio.Play('BellhopBell')end
+ end
+ for p in pairs(markers)do if p.Parent~=Players then dropMarker(p);heardCall[p]=nil end end
+ banner.Visible=loudest~=nil
+ if loudest then
+  local id=stuckId(loudest)
+  bannerTitle.Text=string.upper(loudest.DisplayName)..' NEEDS HELP!'
+  bannerBody.Text='The '..string.lower(itemName(id))..' is stuck on them. Walk up and grab it to pull it off.'
+ end
+end)

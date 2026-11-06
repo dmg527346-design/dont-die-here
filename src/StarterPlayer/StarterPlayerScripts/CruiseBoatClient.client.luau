@@ -1,8 +1,12 @@
 -- Cruise launch controls, chase camera, route and dock HUD; no sale authority here.
+-- Live servers (owner 2026-10-27): Cruise is out of the map pool, so the boat HUD and camera stays off there (MapGen publishes the pool
+-- as the ReplicatedStorage attribute MapPool). Studio keeps it for forced-map tests; no pool after 15 s = run as before.
+do local RS_=game:GetService('ReplicatedStorage');local pool,t0=RS_:GetAttribute('MapPool'),os.clock();if not game:GetService('RunService'):IsStudio()then while pool==nil and os.clock()-t0<15 do task.wait(.5);pool=RS_:GetAttribute('MapPool')end;if pool and not table.find(string.split(pool,','),'Cruise')then return end end end
 local Players=game:GetService('Players')
 local RS=game:GetService('ReplicatedStorage')
 local Run=game:GetService('RunService')
 local UIS=game:GetService('UserInputService')
+local InputHints=require(game:GetService('ReplicatedStorage'):WaitForChild('InputHints'))
 local CAS=game:GetService('ContextActionService')
 local Debris=game:GetService('Debris')
 local player=Players.LocalPlayer
@@ -193,7 +197,7 @@ Run.Heartbeat:Connect(function(dt)
  end
  local boarding,boardDock=nearbyBoard()
  boardButton.Visible=boarding~=nil
- if boarding then boardButton.Text=(UIS:GetLastInputType().Name:find('Gamepad')and 'X: 'or UIS.TouchEnabled and ''or 'E: ')..'BOARD LAUNCH'end
+ if boarding then boardButton.Text=(InputHints.Get()=='pad'and 'X: 'or InputHints.Get()=='touch'and ''or 'E: ')..'BOARD LAUNCH'end
  arrow.Visible=riding~=nil;routeText.Visible=riding~=nil;tip.Visible=riding~=nil
  gui.Enabled=riding~=nil or boarding~=nil
  if not riding or not boat or not boat.Parent or not boat.PrimaryPart then exit.Visible=false;for _,b in pairs(touchButtons)do b.Visible=false end;return end
@@ -212,10 +216,10 @@ Run.Heartbeat:Connect(function(dt)
   local pos=root:FindFirstChild('CruiseFloatPosition');local ori=root:FindFirstChild('CruiseFloatOrientation');if pos and ori then pos.Position=goal.Position;ori.CFrame=goal.Rotation end
   sendClock+=dt;if sendClock>=.05 then sendClock=0;remote:FireServer('control',riding,throttle,steer)end
  end
- local touch=UIS.TouchEnabled and not UIS:GetLastInputType().Name:find('Gamepad')
+ local touch=InputHints.Get()=='touch'
  for _,b in pairs(touchButtons)do b.Visible=touch and driving end
  local canExit=boat:GetAttribute('MooredDock')~=nil;exit.Visible=touch;exit.Active=canExit;exit.Text=canExit and 'DISEMBARK'or 'DOCK TO EXIT'
- tip.Text=if boat:GetAttribute('DockingDock')then 'Parking launch | Wait until it settles'elseif not driving then 'Passenger | '..(canExit and 'Use the dock prompt to disembark'or 'Stay seated until the launch docks')elseif touch then 'Hold arrows to drive | Exit at a dock'elseif UIS:GetLastInputType().Name:find('Gamepad')then 'Left stick: throttle / steer | X: disembark at dock'else 'W/S: throttle | A/D: steer | E: disembark at dock'
+ tip.Text=if boat:GetAttribute('DockingDock')then 'Parking launch | Wait until it settles'elseif not driving then 'Passenger | '..(canExit and 'Use the dock prompt to disembark'or 'Stay seated until the launch docks')elseif touch then 'Hold arrows to drive | Exit at a dock'elseif InputHints.Get()=='pad'then 'Left stick: throttle / steer | X: disembark at dock'else 'W/S: throttle | A/D: steer | E: disembark at dock'
  guideClock+=dt;if guideClock>=.5 then guideClock=0;updateGuide()end
 end)
 Run:BindToRenderStep('CruiseBoatCamera',Enum.RenderPriority.Camera.Value+10,function(dt)

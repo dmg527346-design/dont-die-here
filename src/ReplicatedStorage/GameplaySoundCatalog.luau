@@ -26,7 +26,8 @@ C.UiClick={name="ui-simple-button-click",id="rbxassetid://88442833509532",volume
 C.UiOpen={name="ui-simple-button-click",id="rbxassetid://88442833509532",volume=0.17,speed=0.9,range=55}
 C.UiClose={name="ui-simple-button-click",id="rbxassetid://88442833509532",volume=0.14,speed=0.75,range=55}
 C.UiError={name="Metal Latches 17 (SFX)",id="rbxassetid://9116725218",volume=0.12,speed=1.35,range=55,duration=0.3}
-C.FlashlightClick={name="ClickClack",id="rbxassetid://115959318",volume=0.2,speed=1,range=55}
+-- 115959318 (Roblox ClickClack) is not public: live servers got HTTP 401 on every flashlight toggle. Same public latch the client fallback uses.
+C.FlashlightClick={name="flashlight_click1",id="rbxassetid://128570293170805",volume=0.6,speed=1,range=55}
 C.Spit={name="Spit Sound",id="rbxassetid://1370363170",volume=0.09,speed=1,range=55,duration=0.4}
 C.SprintBreath={name="heavy-breathing-sound-effect-type-02-294195",id="rbxassetid://101395573137763",volume=0.085,speed=1,range=55,loop=true}
 C.MonsterFootstep={name="Heavy creature footstep pool",id="rbxassetid://9114166629",pool={{id="rbxassetid://9114166629",name="Dragon Footsteps 27 (SFX)"},{id="rbxassetid://9114166413",name="Dragon Footsteps 23 (SFX)"}},volume=.38,speed=1,range=70}
@@ -114,6 +115,9 @@ C.StingBumps={name='Apartment Bumps 3 (SFX)',id='rbxassetid://9113135029',volume
 C.StingThunder={name='Distant thunder pool',id='rbxassetid://9120018172',pool=pool('Thunder Distant Boom',{9120018172,9120018216,9120018050}),volume=.16,speed=1,range=100}
 C.StingChoir={name='Heavenly Presence Eerie Choral Tones (SFX)',id='rbxassetid://9125602882',volume=.07,speed=.9,range=100,duration=12}
 C.StingHull={name='Spacecraft Hull Buckle 21 (SFX)',id='rbxassetid://9119388187',volume=.2,speed=.8,range=90}
+C.BirthdaySong={name='Happy Birthday (Lullaby Music Box)',id='rbxassetid://97102550389175',volume=.8,speed=1,range=120,duration=14}
+C.ToiletFlush={name='toilet flush sound effect',id='rbxassetid://116759736098379',volume=1,speed=1,range=110,duration=4}
+C.BalloonPop={name='Balloon Pop 3 (SFX)',id='rbxassetid://9113263649',volume=1,speed=1,range=80,duration=.6}
 C.HeliumHiss={name='Medium Pressure Air Release 4 (SFX)',id='rbxassetid://9116495977',volume=.22,speed=1.15,range=35,duration=2.2}
 C.ClownHonk={name='Bike horn pool',id='rbxassetid://9113438364',pool=pool('Bike Horn Squeeze',{9113438364,9113438365,9113438543}),volume=.35,speed=1,range=50}
 C.CameraShutter={name='Roblox GUI - Camera Shutter',id='rbxassetid://17208312548',volume=.45,speed=1,range=40}
@@ -139,8 +143,7 @@ C.LanternStep={name='Lantern spike tap',id=C.MonsterFootstep.id,pool=C.MonsterFo
 C.PlungerPop={name='Glass Bottle Cork Popping (plunger, loud)',id='rbxassetid://136137302295080',volume=1,speed=.72,range=110,duration=2}
 C.HairRustle={name='Cloth Rustle 5 (SFX, hair)',id='rbxassetid://9113837941',volume=.55,speed=.78,range=45}
 C.MirrorSting={name='horror-stinger (mirror)',id='rbxassetid://104131914354223',volume=.55,speed=1,range=30,duration=3}
--- Neon-Eyed Tripod (2026-10-03): user's dort.wav drone loops on it; voice and steps are deeper lantern variants.
-C.NeonAmbient={name='Neon Tripod drone (dort)',id='rbxassetid://98671791081692',volume=.55,speed=1,range=75,loop=true}
+-- Neon-Eyed Tripod: the dort.wav drone (NeonAmbient) was removed from the game entirely (owner 2026-10-25).
 C.NeonBreath={name='DISTURBED WHISPERS 06 (very slow)',id='rbxassetid://9043347151',volume=.12,speed=.62,range=55}
 C.NeonNotice={name='Neon Tripod flutter (noticed you)',id=C.LanternNotice.id,pool=C.LanternNotice.pool,volume=.5,speed=.56,range=90}
 C.NeonRush={name='Creature Vocal Pterodactyl Death Shriek 2 (SFX, deep)',id='rbxassetid://9113988191',volume=.45,speed=.6,range=90,duration=2.8}
@@ -151,4 +154,68 @@ C.NeonStep={name='Neon Tripod spike tap',id=C.MonsterFootstep.id,pool=C.MonsterF
 C.HypnoShot={name='Hypno metallic zap',id=C.AnvilClang.id,volume=.9,speed=1.3,range=110,minDistance=12,duration=2}
 C.HypnoShotLocal={name='Hypno shooter zap',id=C.AnvilClang.id,volume=.85,speed=1.3,range=110,minDistance=12,duration=2}
 C.HypnoHit={name='Hypno impact zap',id=C.JarPop.id,volume=.9,speed=1.1,range=90,minDistance=8,duration=1}
+
+-- Distinct, provenance-verified selected Toolbox partner effects.
+C["DraftSelected_SpringyWhisk"]={name="Comic Tube Bounce 4 (SFX)",id="rbxassetid://9113863445",volume=0.5,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_PoutingSugarBowl"]={name="Slide Whistle 4 (SFX)",id="rbxassetid://9119198140",volume=1.0,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_RockingSeahorseToy"]={name="Wooden Mechanism Jerks Squeaks 7 (SFX)",id="rbxassetid://9120874322",volume=0.32,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_OrbitingAtomModel"]={name="Electronic Zing Pass By Swirly Chirps 2 (SFX)",id="rbxassetid://9114292248",volume=0.25,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_PeekingNestingDoll"]={name="Wood Box Open Close Solid Tight 1 (SFX)",id="rbxassetid://9120798631",volume=0.4,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_RestlessToyExcavator"]={name="Servo Motor 29 (SFX)",id="rbxassetid://9118927552",volume=0.65,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_BobbingBirdBath"]={name="Water Drip Water Filled Bucket Constant 21 (SFX)",id="rbxassetid://9120548220",volume=0.42,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_CrinklyPaperBag"]={name="Newspaper Wadding Into A Ball 16 (SFX)",id="rbxassetid://9117088526",volume=1.8,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_SleepyMeasuringJug"]={name="Plastic Water Jug Glugs 14 (SFX)",id="rbxassetid://9117644772",volume=0.38,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_TopsyChessRook"]={name="Marble Table Hit On Wood Portion Thuddy Hits (SFX)",id="rbxassetid://9125654847",volume=0.38,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_RestlessNutcracker"]={name="Puppet Rattle Miscellaneous Wooden 6 (SFX)",id="rbxassetid://9117975185",volume=0.36,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_SillySatelliteDish"]={name="Shortwave Bleep Beeps Radio Staticky Telemet (SFX)",id="rbxassetid://9125937530",volume=1.6,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_FidgetCalculator"]={name="Canon Calculator 5 (SFX)",id="rbxassetid://9113712304",volume=0.38,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_FoldingTravelStool"]={name="Ratchet Comic 2 (SFX)",id="rbxassetid://9118043348",volume=0.3,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_TumblingDominoRack"]={name="Dominoes Smack 18 (SFX)",id="rbxassetid://9114126496",volume=0.35,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_RebelliousToyDrum"]={name="Drum Tom Tom Single Hits Bent Drum Head Stri (SFX)",id="rbxassetid://9125514393",volume=0.28,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_WindUpCrabToy"]={name="Crab Claw Repetitive Clicks 3 (SFX)",id="rbxassetid://9113957245",volume=0.32,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_OrigamiCrane"]={name="Typing Paper Flutter Single Sheet Passing By (SFX)",id="rbxassetid://9126143504",volume=0.4,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_DancingMetronome"]={name="Dial Switch Twisting Sharp Ticking 79 (SFX)",id="rbxassetid://9114071134",volume=0.28,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_ColdIron"]={name="Swish By Blowing Air Hissing Tubular 1 (SFX)",id="rbxassetid://9119694091",volume=1.6,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_GrumblingPiggyBank"]={name="Pig Grunts 4 (SFX)",id="rbxassetid://9117346376",volume=1.0,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_ForgetfulDeskLamp"]={name="Lamp Switch Luxo Lamp Twist Clicks 11 (SFX)",id="rbxassetid://9116214302",volume=0.45,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_NervousSaltShaker"]={name="Sneezing Comical 3 (SFX)",id="rbxassetid://9119304618",volume=0.27,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_CreepingTapeMeasure"]={name="Measuring Tape 2 (SFX)",id="rbxassetid://9116480952",volume=3.2,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_SulkingUmbrella"]={name="Cloth Flap 6 (SFX)",id="rbxassetid://9113819490",volume=0.42,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_BackwardsHairdryer"]={name="Hair Dryer 1 (SFX)",id="rbxassetid://9114742693",volume=0.23,speed=1.0,minDistance=5,range=45,loop=true}
+C["DraftSelected_NoseyMagnifier"]={name="Magic Glows Soft Clusters Of Chiming Hits 1 (SFX)",id="rbxassetid://9116394545",volume=3.0,speed=1.0,minDistance=5,range=45,loop=false}
+C["DraftSelected_SqueakyDuck"]={name="Squeeze Toy Squeaky Rubber With Noisemaker H (SFX)",id="rbxassetid://9125994553",volume=0.28,speed=1.0,minDistance=5,range=45,loop=false}
+-- Monster attack sounds (2026-10-22, Creator Store / Pro Sound Effects): wind-ups, grabs, hits and the Tripod's kick.
+C.WraithLunge={name='Creature Screech Pterodactyl Vocals 1 (SFX)',id='rbxassetid://9125474229',volume=.5,speed=1.08,range=85}
+C.MonsterWhoosh={name='cloth fast whoosh swing',id='rbxassetid://111254855668531',volume=.55,speed=1,range=55}
+C.MonsterHitThump={name='Soccer Ball Tackle 4 (SFX): deep thump',id='rbxassetid://9119330371',volume=.6,speed=.9,range=60}
+C.MonsterGrab={name='Leg Grab Toss Body 1 (SFX)',id='rbxassetid://9116258509',volume=.55,speed=1,range=55}
+C.NeonKickClang={name='Shield Clang As Hit Metal 1 (SFX)',id='rbxassetid://9119072660',volume=.45,speed=.8,range=70}
+C.LanternLift={name='Creaks And Squeaks 6 (SFX): heavy metal creak',id='rbxassetid://9113969124',volume=.45,speed=.9,range=60}
+-- Fortune teller smashed (CloseUpChoices); owner picked this one by ear, 2026-10-24.
+C.BulbCrack={name='light bulb break',id='rbxassetid://133426190455626',volume=.6,speed=1,range=70}
+-- Level scares (LevelAmbienceClient, 2026-10-25): every one comes from a real thing nearby (a closed door, the floor
+-- above, a loot item, a monster out of sight). Swap an id here to change a sound; the owner picks them by ear.
+C.ScareKnock={name='Knocking on a nearby door',id='rbxassetid://9120918417',pool={{id='rbxassetid://9120918417',name='Wood Knock Wooden Door 1'},{id='rbxassetid://9120918534',name='Wood Knock Wooden Door 2'},{id='rbxassetid://9120918492',name='Wood Knock Wooden Door 3'},{id='rbxassetid://91168254607377',name='Door Knock (InterTMCH)'},{id='rbxassetid://138990412937492',name='Door Knock (Reblrthztv)'}},volume=.55,speed=.92,range=60,minDistance=6}
+C.ScarePound={name='Door pounds, handle jiggles',id='rbxassetid://9114148744',pool=pool('Door Pounds',{9114148744,9114149153}),volume=.5,speed=.95,range=60,minDistance=6}
+C.ScareSteps={name='Creeping floorboards (footsteps above)',id='rbxassetid://9120836780',pool={{id='rbxassetid://9120836780',name='Wood Creaks 51 (creeping)'},{id='rbxassetid://9114496099',name='Floor Creaks 20'},{id='rbxassetid://71387640148003',name='Wood Footsteps'}},volume=.5,speed=.9,range=55,minDistance=8}
+C.ScareThud={name='Something falls in the next room',id='rbxassetid://9126090621',pool={{id='rbxassetid://9126090621',name='Table Falls'},{id='rbxassetid://9113437538',name='Big Thuds Wall Impact 2'},{id='rbxassetid://9116250707',name='Leather Bible falls'}},volume=.45,speed=.9,range=60,minDistance=6}
+C.ScareWhisper={name='Whisper behind you',id='rbxassetid://9043347151',pool={{id='rbxassetid://9043347151',name='DISTURBED WHISPERS 06'},{id='rbxassetid://128699976960071',name='creepy whispering'},{id='rbxassetid://89930215709196',name='creepy whispering 1'}},volume=.22,speed=.92,range=20,minDistance=2}
+-- Van utility gear (GearShopServer, 2026-10-27). Both reuse assets already in this catalog; swap by ear.
+C.DecoyChirp={name='Chirpy Decoy chirp (Whistle Wolf 5, sped up)',id='rbxassetid://9120689345',volume=.3,speed=1.8,range=70,duration=.6}
+C.CartBellRing={name='Cart Bell ring (Shop Bell open, pitched up)',id='rbxassetid://127488139302452',volume=.5,speed=1.35,range=110,duration=.8}
+-- CursedA 2026-10-27: HungryLunchbox chomp (reuses the Chattering Metal asset of NeonChatter, sped up).
+C.LunchboxChomp={name='Chattering Metal (lunchbox chomp, fast)',id='rbxassetid://9125914961',volume=.42,speed=1.35,range=60,duration=.5}
+-- Dread layer (LevelAmbienceClient.DreadLayer, 2026-10-27 ScareSound): Roblox library sounds (APM / Pro Sound Effects), swap by ear.
+C.ScareBreath={name='Breathing right behind you',id='rbxassetid://9043349702',pool=pool('HORROR BREATH OUT',{9043349702,9043349874,9043349882}),volume=.3,speed=.95,range=18,minDistance=2,duration=6}
+C.ScareGasp={name='Your gasp when a monster sees you',id='rbxassetid://9043348617',pool=pool('HORROR BREATH IN FAST',{9043348617,9043348620}),volume=.3,speed=1,range=30,duration=2.5}
+C.ScareSpotted={name='BIG IMPACT HIT 11 (spotted)',id='rbxassetid://9043338036',volume=.3,speed=1,range=60,duration=2.5}
+C.ScareRelief={name='AMBIENT BOOM 04 (it lost you)',id='rbxassetid://9043340902',volume=.2,speed=.8,range=100,duration=3}
+C.ScareScrape={name='Something dragged in the next room',id='rbxassetid://9116621800',pool={{id='rbxassetid://9116621800',name='Metal Drum 3 (SFX)'},{id='rbxassetid://9125690244',name='Metal Slide Metal Box On Metal Desk 2 (SFX)'},{id='rbxassetid://9118767462',name='Sand Bag Slide 5 (SFX)'}},volume=.4,speed=.8,range=60,minDistance=6}
+C.ScareDrip={name='Distant drips',id='rbxassetid://9126190246',pool=pool('Water Drips Into Filled Bowl Cave',{9126190246,9126190182,9126190364,9126190341}),volume=.08,speed=1,range=45,minDistance=4,duration=4}
+-- WorldB world features (2026-10-27). Every id is an existing catalog asset (no new uploads); see WorldB SOUNDS.md.
+C.CartSqueak={name='Wood Door Creak Squeak 2 (runaway cart wheel, fast)',id='rbxassetid://9120839010',volume=.32,speed=1.75,range=70,duration=.5}
+C.MouseWind={name='Crab Claw Repetitive Clicks 3 (SFX) (tattle mouse winding)',id='rbxassetid://9113957245',volume=.3,speed=1.4,minDistance=5,range=40}
+C.MouseSqueak={name='Squeeze Toy Squeaky Rubber With Noisemaker H (SFX) (tattle mouse)',id='rbxassetid://9125994553',volume=.22,speed=1.5,minDistance=5,range=55}
+-- WorldB flood valve (2026-10-27): the drain gurgle, an alias of an existing draft-item asset.
+C.DrainGurgle={name='Plastic Water Jug Glugs 14 (SFX) (flood drain)',id='rbxassetid://9117644772',volume=.35,speed=.8,minDistance=6,range=60}
 return C

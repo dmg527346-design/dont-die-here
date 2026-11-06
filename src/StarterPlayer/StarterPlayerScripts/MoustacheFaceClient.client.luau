@@ -8,7 +8,8 @@ Run:BindToRenderStep('MoustacheFaceView',Enum.RenderPriority.Camera.Value+5,func
  if map and map:FindFirstChild('Interactive')then for _,item in map.Interactive:GetChildren()do local id=item:GetAttribute('FaceOwner');local owner=id and Players:GetPlayerByUserId(id);local head=owner and owner.Character and owner.Character:FindFirstChild('Head');if head then item:PivotTo(head.CFrame*CFrame.new(0,.55,.75)*CFrame.Angles(0,math.pi,0))end end end
  local cam=workspace.CurrentCamera;local ch=p.Character;local h=ch and ch:FindFirstChildOfClass('Humanoid')
  local map=workspace:FindFirstChild('Mansion');local target
- if cam and h and h.Health>0 and map then for _,m in map.Interactive:GetChildren()do if m:GetAttribute('FaceOwner')==p.UserId then target=m;break end end end
+ local interactive=map and map:FindFirstChild('Interactive') -- absent while a lobby player is already in and the map still generates
+ if cam and h and h.Health>0 and interactive then for _,m in interactive:GetChildren()do if m:GetAttribute('FaceOwner')==p.UserId then target=m;break end end end
  if not target then clear();return end
  if model~=target then
   clear();model=target;copy=target:Clone();copy.Name='MoustacheFaceView'

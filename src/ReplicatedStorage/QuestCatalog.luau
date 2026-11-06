@@ -1,7 +1,9 @@
+-- Owner 2026-10-26: medium dailies x2, hard dailies x2.5, weeklies x2 targets (the log was cleared in an hour).
+-- Owner 2026-10-26: quest token rewards halved (quests made tokens too easy); mastery ladders unchanged.
 -- Pure quest definitions. Persistence and remotes are owned by ProgressService/QuestService.
 -- Events must already be qualified, deduped and provenance-filtered by their server owners.
--- Scholar ids are frozen CursedCatalog.Order v1 (77); shipping must verify template/spawn reachability.
--- MaxDistinct=128 deliberately covers 77 Scholar ids; a 64-entry cap would make tier V impossible.
+-- Scholar accepts the 104 reachable loot types; the existing 76-item tier V target and earned rewards stay unchanged.
+-- MaxDistinct=128 deliberately covers 104 Scholar ids; saved definitions are migrated additively by QuestCore.
 -- Map/boat weekly definitions require explicit capabilities; default excludes them.
 -- Cosmetic entitlement entries must ship to all servers before any reward grant is enabled.
 -- noDeath/noPartyDeath filters require explicit server booleans; missing qualification must fail closed.
@@ -14,7 +16,7 @@ local M = {
 			hint = "Sell at the van; team sales count for everyone",
 			icon = "pickup",
 			target = 8,
-			reward = { tokens = 40, revives = 0 },
+			reward = { tokens = 20, revives = 0 },
 			event = "ItemSold",
 			metric = "count",
 			mode = "count",
@@ -27,7 +29,7 @@ local M = {
 			hint = "Sell at the van; team sales count for everyone",
 			icon = "selling",
 			target = 400,
-			reward = { tokens = 40, revives = 0 },
+			reward = { tokens = 20, revives = 0 },
 			event = "ItemSold",
 			metric = "value",
 			mode = "count",
@@ -40,7 +42,7 @@ local M = {
 			hint = "Grab level loot; regrabbing an item does not count",
 			icon = "pickup",
 			target = 15,
-			reward = { tokens = 40, revives = 0 },
+			reward = { tokens = 20, revives = 0 },
 			event = "ItemPickup",
 			metric = "count",
 			mode = "count",
@@ -53,7 +55,7 @@ local M = {
 			hint = "Stay in a closet for 3 seconds, then leave safely",
 			icon = "hiding",
 			target = 3,
-			reward = { tokens = 40, revives = 0 },
+			reward = { tokens = 20, revives = 0 },
 			event = "ClosetHide",
 			metric = "count",
 			mode = "count",
@@ -66,7 +68,7 @@ local M = {
 			hint = "Grab 3 different toys from the lobby tables",
 			icon = "pickup",
 			target = 3,
-			reward = { tokens = 30, revives = 0 },
+			reward = { tokens = 15, revives = 0 },
 			event = "LobbyToyGrab",
 			metric = "itemId",
 			mode = "distinct",
@@ -78,8 +80,8 @@ local M = {
 			text = "Finish 2 levels",
 			hint = "Sell enough loot, then return to the van to finish",
 			icon = "no_death",
-			target = 2,
-			reward = { tokens = 60, revives = 0 },
+			target = 4,
+			reward = { tokens = 30, revives = 0 },
 			event = "LevelCleared",
 			metric = "count",
 			mode = "count",
@@ -91,8 +93,8 @@ local M = {
 			text = "Sell 20 loot items with your team",
 			hint = "Bring loot back and sell it at the van",
 			icon = "pickup",
-			target = 20,
-			reward = { tokens = 60, revives = 0 },
+			target = 40,
+			reward = { tokens = 30, revives = 0 },
 			event = "ItemSold",
 			metric = "count",
 			mode = "count",
@@ -104,8 +106,8 @@ local M = {
 			text = "Open a locked room",
 			hint = "Locked doors need a key from the same floor",
 			icon = "locked_room",
-			target = 1,
-			reward = { tokens = 60, revives = 0 },
+			target = 2,
+			reward = { tokens = 30, revives = 0 },
 			event = "DoorUnlocked",
 			metric = "count",
 			mode = "count",
@@ -117,8 +119,8 @@ local M = {
 			text = "Escape the monster 2 times",
 			hint = "Lose the monster after a chase of at least 5 seconds",
 			icon = "chase",
-			target = 2,
-			reward = { tokens = 60, revives = 0 },
+			target = 4,
+			reward = { tokens = 30, revives = 0 },
 			event = "ChaseEscaped",
 			metric = "count",
 			mode = "count",
@@ -130,8 +132,8 @@ local M = {
 			text = "Trigger 5 different cursed item effects",
 			hint = "Trigger effects from different cursed item types",
 			icon = "pickup",
-			target = 5,
-			reward = { tokens = 60, revives = 0 },
+			target = 10,
+			reward = { tokens = 30, revives = 0 },
 			event = "GrabUse",
 			metric = "itemId",
 			mode = "distinct",
@@ -143,8 +145,8 @@ local M = {
 			text = "Finish a level with a teammate",
 			hint = "Finish the level with at least one teammate",
 			icon = "party",
-			target = 1,
-			reward = { tokens = 70, revives = 0 },
+			target = 2,
+			reward = { tokens = 35, revives = 0 },
 			event = "LevelCleared",
 			metric = "count",
 			mode = "count",
@@ -155,8 +157,8 @@ local M = {
 				text = "Finish 2 levels by yourself",
 				hint = "Sell enough loot, then return to the van; play solo",
 				icon = "no_death",
-				target = 2,
-				reward = { tokens = 70, revives = 0 },
+				target = 4,
+				reward = { tokens = 35, revives = 0 },
 				event = "LevelCleared",
 				metric = "count",
 				mode = "count",
@@ -169,8 +171,8 @@ local M = {
 			text = "Finish 4 levels",
 			hint = "Sell enough loot, then return to the van to finish",
 			icon = "no_death",
-			target = 4,
-			reward = { tokens = 90, revives = 0 },
+			target = 10,
+			reward = { tokens = 45, revives = 0 },
 			event = "LevelCleared",
 			metric = "count",
 			mode = "count",
@@ -182,8 +184,8 @@ local M = {
 			text = "Sell $2,500 of loot with your team",
 			hint = "Sell valuable loot; all team sales help",
 			icon = "selling",
-			target = 2500,
-			reward = { tokens = 90, revives = 0 },
+			target = 6250,
+			reward = { tokens = 45, revives = 0 },
 			event = "ItemSold",
 			metric = "value",
 			mode = "count",
@@ -196,7 +198,7 @@ local M = {
 			hint = "Sell enough loot and return to the van without dying",
 			icon = "no_death",
 			target = 1,
-			reward = { tokens = 90, revives = 0 },
+			reward = { tokens = 45, revives = 0 },
 			event = "LevelCleared",
 			metric = "count",
 			mode = "count",
@@ -208,8 +210,8 @@ local M = {
 			text = "Find a hidden treasure",
 			hint = "Explore hidden spaces and collect secret treasure",
 			icon = "secrets",
-			target = 1,
-			reward = { tokens = 90, revives = 0 },
+			target = 3,
+			reward = { tokens = 45, revives = 0 },
 			event = "SecretFound",
 			metric = "count",
 			mode = "count",
@@ -221,8 +223,8 @@ local M = {
 			text = "Finish a level with everyone surviving",
 			hint = "Finish the level without anyone on your team dying",
 			icon = "party",
-			target = 1,
-			reward = { tokens = 90, revives = 0 },
+			target = 3,
+			reward = { tokens = 45, revives = 0 },
 			event = "LevelCleared",
 			metric = "count",
 			mode = "count",
@@ -233,8 +235,8 @@ local M = {
 				text = "Finish a level without dying",
 				hint = "Finish a solo level without dying",
 				icon = "no_death",
-				target = 1,
-				reward = { tokens = 90, revives = 0 },
+				target = 3,
+				reward = { tokens = 45, revives = 0 },
 				event = "LevelCleared",
 				metric = "count",
 				mode = "count",
@@ -247,8 +249,8 @@ local M = {
 			text = "Meet quota with 30 seconds to spare",
 			hint = "Meet quota with at least 30 seconds left",
 			icon = "selling",
-			target = 1,
-			reward = { tokens = 90, revives = 0 },
+			target = 3,
+			reward = { tokens = 45, revives = 0 },
 			event = "QuotaMet",
 			metric = "count",
 			mode = "count",
@@ -262,8 +264,8 @@ local M = {
 			text = "Sell 120 loot items with your team",
 			hint = "Sell cursed loot at the van throughout the week",
 			icon = "pickup",
-			target = 120,
-			reward = { tokens = 200, revives = 0 },
+			target = 250,
+			reward = { tokens = 100, revives = 0 },
 			event = "ItemSold",
 			metric = "count",
 			mode = "count",
@@ -274,8 +276,8 @@ local M = {
 			text = "Sell $15,000 of loot with your team",
 			hint = "Sell valuable loot; all team sales help",
 			icon = "selling",
-			target = 15000,
-			reward = { tokens = 220, revives = 0 },
+			target = 30000,
+			reward = { tokens = 110, revives = 0 },
 			event = "ItemSold",
 			metric = "value",
 			mode = "count",
@@ -286,8 +288,8 @@ local M = {
 			text = "Finish 15 levels",
 			hint = "Sell enough loot, then return to the van to finish",
 			icon = "no_death",
-			target = 15,
-			reward = { tokens = 220, revives = 0 },
+			target = 30,
+			reward = { tokens = 110, revives = 0 },
 			event = "LevelCleared",
 			metric = "count",
 			mode = "count",
@@ -298,8 +300,8 @@ local M = {
 			text = "Reach and finish level 6 in one run",
 			hint = "Keep one run going until you clear level 6",
 			icon = "achievements",
-			target = 6,
-			reward = { tokens = 250, revives = 0 },
+			target = 12,
+			reward = { tokens = 125, revives = 0 },
 			event = "LevelCleared",
 			metric = "level",
 			mode = "max",
@@ -310,8 +312,8 @@ local M = {
 			text = "Finish levels in 4 different map types",
 			hint = "Finish different map types this week",
 			icon = "maps",
-			target = 4,
-			reward = { tokens = 220, revives = 0 },
+			target = 4, -- 4 of the 5 map types (2026-10-27; was 8 of 8)
+			reward = { tokens = 110, revives = 0 },
 			event = "LevelCleared",
 			metric = "mapKind",
 			mode = "distinct",
@@ -323,8 +325,8 @@ local M = {
 			text = "Finish 3 Cruise levels",
 			hint = "Clear Cruise levels; first claim earns a hat",
 			icon = "maps",
-			target = 3,
-			reward = { tokens = 180, revives = 0 },
+			target = 6,
+			reward = { tokens = 90, revives = 0 },
 			event = "LevelCleared",
 			metric = "count",
 			mode = "count",
@@ -336,8 +338,8 @@ local M = {
 			text = "Finish 3 Hospital levels",
 			hint = "Clear Hospital levels; first claim earns a hat",
 			icon = "maps",
-			target = 3,
-			reward = { tokens = 180, revives = 0 },
+			target = 6,
+			reward = { tokens = 90, revives = 0 },
 			event = "LevelCleared",
 			metric = "count",
 			mode = "count",
@@ -349,8 +351,8 @@ local M = {
 			text = "Escape the monster 12 times",
 			hint = "Lose the monster after chases of at least 5 seconds",
 			icon = "chase",
-			target = 12,
-			reward = { tokens = 200, revives = 0 },
+			target = 24,
+			reward = { tokens = 100, revives = 0 },
 			event = "ChaseEscaped",
 			metric = "count",
 			mode = "count",
@@ -361,8 +363,8 @@ local M = {
 			text = "Open 6 locked rooms",
 			hint = "Use matching floor keys to open locked rooms",
 			icon = "locked_room",
-			target = 6,
-			reward = { tokens = 200, revives = 0 },
+			target = 12,
+			reward = { tokens = 100, revives = 0 },
 			event = "DoorUnlocked",
 			metric = "count",
 			mode = "count",
@@ -373,8 +375,8 @@ local M = {
 			text = "Finish 4 levels with everyone surviving",
 			hint = "Finish the level without anyone on your team dying",
 			icon = "party",
-			target = 4,
-			reward = { tokens = 220, revives = 0 },
+			target = 8,
+			reward = { tokens = 110, revives = 0 },
 			event = "LevelCleared",
 			metric = "count",
 			mode = "count",
@@ -384,8 +386,8 @@ local M = {
 				text = "Finish 4 levels without dying",
 				hint = "Finish solo levels without dying",
 				icon = "no_death",
-				target = 4,
-				reward = { tokens = 220, revives = 0 },
+				target = 8,
+				reward = { tokens = 110, revives = 0 },
 				event = "LevelCleared",
 				metric = "count",
 				mode = "count",
@@ -397,8 +399,8 @@ local M = {
 			text = "Finish 5 levels with at least 3 players",
 			hint = "Finish the level with at least 3 players in your team",
 			icon = "party",
-			target = 5,
-			reward = { tokens = 240, revives = 0 },
+			target = 10,
+			reward = { tokens = 120, revives = 0 },
 			event = "LevelCleared",
 			metric = "count",
 			mode = "count",
@@ -408,8 +410,8 @@ local M = {
 				text = "Finish 5 levels by yourself",
 				hint = "Finish solo levels; separate runs count",
 				icon = "no_death",
-				target = 5,
-				reward = { tokens = 240, revives = 0 },
+				target = 10,
+				reward = { tokens = 120, revives = 0 },
 				event = "LevelCleared",
 				metric = "count",
 				mode = "count",
@@ -595,7 +597,7 @@ local M = {
 			event = "LevelCleared",
 			metric = "mapKind",
 			mode = "distinct",
-			targets = { 2, 4, 6, 7, 8 },
+			targets = { 1, 2, 3, 4, 5 }, -- five map types (2026-10-27)
 			rewards = {
 				{ tokens = 60, revives = 0 },
 				{ tokens = 120, revives = 0 },
@@ -616,7 +618,7 @@ local M = {
 			event = "ItemPickup",
 			metric = "itemId",
 			mode = "distinct",
-			targets = { 10, 20, 30, 40, 77 },
+			targets = { 10, 20, 30, 40, 76 },
 			rewards = {
 				{ tokens = 60, revives = 0 },
 				{ tokens = 120, revives = 0 },
@@ -629,7 +631,7 @@ local M = {
 			filters = {},
 			eligibleIds = {
 				"Doll", "Compass", "Shadow", "Backpack", "Whistle", "Teddy", "Flashlight", "Clock",
-				"Coin", "Mask", "Balloon", "Horn", "Present", "Cake", "Crown", "Clown",
+				"Coin", "Mask", "Horn", "Present", "Crown", "Clown",
 				"Candles", "MusicBox", "Candy", "Bracelet", "Portrait", "Bell", "Telephone", "Vacuum",
 				"Shoes", "Keyring", "Lantern", "Jawbone", "Chain", "Heart", "DiscoBall", "Mirror",
 				"MagicOrb", "Moustache", "RainCloud", "CoolSunglasses", "FlyJar", "CursedPerfume", "BirthdayHat", "CryingOnion",
@@ -637,23 +639,27 @@ local M = {
 				"CoffeeMug", "JawbreakerBag", "HeliumTank", "GarlicBulb", "Lemon", "PinocchioPuppet", "ToothPillow", "ClownNose",
 				"VampireTeeth", "Anvil", "Hourglass", "SpinningTop", "BlackCatStatue", "CursedPhoto", "Kazoo", "GlueBottle",
 				"PartyPopper", "GuessWhoHands", "FacePlunger", "ClingyTeddy", "CursedHair", "SelfTanner", "MoodRing", "WetFloorSign",
-				"MannequinHand", "GiftCard", "ClawPlushie", "MascotHead", "MuzakRadio"
+				"MannequinHand", "GiftCard", "ClawPlushie", "MascotHead", "MuzakRadio",
+				"SpringyWhisk", "PoutingSugarBowl", "RockingSeahorseToy", "OrbitingAtomModel", "PeekingNestingDoll", "RestlessToyExcavator", "BobbingBirdBath",
+				"CrinklyPaperBag", "SleepyMeasuringJug", "TopsyChessRook", "RestlessNutcracker", "SillySatelliteDish", "FidgetCalculator", "FoldingTravelStool",
+				"TumblingDominoRack", "RebelliousToyDrum", "WindUpCrabToy", "OrigamiCrane", "DancingMetronome", "ColdIron", "GrumblingPiggyBank",
+				"ForgetfulDeskLamp", "NervousSaltShaker", "CreepingTapeMeasure", "SulkingUmbrella", "BackwardsHairdryer", "NoseyMagnifier", "SqueakyDuck"
 			},
-			collectionVersion = 1
+			collectionVersion = 2
 		}
 	},
 	DailyBonus = {
 		id = "daily_bonus",
 		hint = "Finish all 3 Today goals, then collect this bonus",
 		target = 3,
-		reward = { tokens = 50, revives = 1 },
+		reward = { tokens = 25, revives = 1 },
 		icon = "daily"
 	},
 	WeeklyChest = {
 		id = "weekly_chest",
 		hint = "Finish 4 This Week goals, then collect your chest",
 		target = 4,
-		reward = { tokens = 300, revives = 2 },
+		reward = { tokens = 150, revives = 2 },
 		fallbackTokens = 150,
 		icon = "weekly_chest"
 	},
@@ -661,7 +667,7 @@ local M = {
 		id = "mastery",
 		hint = "Claim stage 5 of all 10 lifetime goals",
 		target = 10,
-		reward = { tokens = 0, revives = 0 },
+		reward = { tokens = 10, revives = 0 },
 		title = "[Haunted]",
 		titleId = "Tag_Haunted",
 		kind = "Tag",
@@ -675,9 +681,10 @@ local M = {
 	MaxDistinct = 128,
 	MaxAppliedBatches = 256,
 	MaxClaimReceipts = 256,
+	ScholarCollectionVersion = 2,
 	ScholarEligibleIds = {
 		"Doll", "Compass", "Shadow", "Backpack", "Whistle", "Teddy", "Flashlight", "Clock",
-		"Coin", "Mask", "Balloon", "Horn", "Present", "Cake", "Crown", "Clown",
+		"Coin", "Mask", "Horn", "Present", "Crown", "Clown",
 		"Candles", "MusicBox", "Candy", "Bracelet", "Portrait", "Bell", "Telephone", "Vacuum",
 		"Shoes", "Keyring", "Lantern", "Jawbone", "Chain", "Heart", "DiscoBall", "Mirror",
 		"MagicOrb", "Moustache", "RainCloud", "CoolSunglasses", "FlyJar", "CursedPerfume", "BirthdayHat", "CryingOnion",
@@ -685,9 +692,13 @@ local M = {
 		"CoffeeMug", "JawbreakerBag", "HeliumTank", "GarlicBulb", "Lemon", "PinocchioPuppet", "ToothPillow", "ClownNose",
 		"VampireTeeth", "Anvil", "Hourglass", "SpinningTop", "BlackCatStatue", "CursedPhoto", "Kazoo", "GlueBottle",
 		"PartyPopper", "GuessWhoHands", "FacePlunger", "ClingyTeddy", "CursedHair", "SelfTanner", "MoodRing", "WetFloorSign",
-		"MannequinHand", "GiftCard", "ClawPlushie", "MascotHead", "MuzakRadio"
+		"MannequinHand", "GiftCard", "ClawPlushie", "MascotHead", "MuzakRadio",
+				"SpringyWhisk", "PoutingSugarBowl", "RockingSeahorseToy", "OrbitingAtomModel", "PeekingNestingDoll", "RestlessToyExcavator", "BobbingBirdBath",
+				"CrinklyPaperBag", "SleepyMeasuringJug", "TopsyChessRook", "RestlessNutcracker", "SillySatelliteDish", "FidgetCalculator", "FoldingTravelStool",
+				"TumblingDominoRack", "RebelliousToyDrum", "WindUpCrabToy", "OrigamiCrane", "DancingMetronome", "ColdIron", "GrumblingPiggyBank",
+				"ForgetfulDeskLamp", "NervousSaltShaker", "CreepingTapeMeasure", "SulkingUmbrella", "BackwardsHairdryer", "NoseyMagnifier", "SqueakyDuck"
 	},
-	MapKinds = { "Hotel", "Hospital", "School", "Manor", "Mall", "Dungeon", "Birthday", "Cruise" },
+	MapKinds = { "Hotel", "Hospital", "School", "Manor", "Dungeon" }, -- Mall, Birthday and Cruise left the map pool (owner 2026-10-27)
 	RewardCosmetics = {
 		{
 			id = "quest_title_collector",
@@ -791,7 +802,8 @@ for kind,set in M.MapSets do
  local id='w_map_'..string.lower(kind);local def
  for _,q in M.Weekly do if q.id==id then def=q end end
  if not def then def={id=id,text='Finish 3 '..kind..' levels',hint='Clear '..kind..' levels; first claim earns a hat',icon='maps',target=3,reward={tokens=180,revives=0},event='LevelCleared',metric='count',mode='count',filters={mapKind=kind},capability='maps'};table.insert(M.Weekly,def) end
- def.firstReward={cosmeticIds={'hat_'..set}}
+ if set=='detention'then def.firstReward=nil;def.hint='Clear '..kind..' levels' -- the Dunce Cap was retired (owner 2026-10-28)
+ else def.firstReward={cosmeticIds={'hat_'..set}}end
 end
 local extras={collector={[4]='trail_glitter'},survivor={[4]='torch_candle'},deep_diver={[4]='torch_lantern'},tycoon={[3]='eyes_monocle'},escape_artist={[4]='trail_speed',[5]='eyes_ghostflame'},team_player={[4]='trail_hearts'},locksmith={[4]='eyes_spider'},treasure_hunter={[4]='trail_coins'},world_traveler={[5]='back_globetrotter'},curse_scholar={[5]='aura_collector'}}
 for _,def in M.Achievements do for tier,id in extras[def.id] or {} do def.rewards[tier].cosmeticIds={id} end end
@@ -806,6 +818,23 @@ M.Event={id='halloween_2026',quests={
  {id='e_collect',hint="Grab new loot objects during Halloween missions",text='Collect 25 cursed items during Halloween',icon='pickup',target=25,event='ItemPickup',reward={candyCorn=100}},
  },shop={{id='ring_pumpkinking',cost=100},{id='tat_pumpkinking',cost=120},{id='shoe_pumpkinking',cost=150},{id='aura_pumpkinking',cost=180},{id='trail_pumpkinseeds',cost=150}},
  finale={target=6,reward={cosmeticIds={'title_pumpkinking'}}}}
+
+-- Masteries: lifetime ladders, one per monster (escape its chases) and one for collecting loot. Ten levels each;
+-- every level pays MasteryLevelReward the moment it is reached, level 10 also pays MasteryCompleteReward.
+-- The first MasteryDailyBoost mastery points of every UTC day count double, so each new day moves the bars faster.
+M.MasteryLevelReward={tokens=25,revives=0}
+M.MasteryCompleteReward={tokens=0,revives=1}
+M.MasteryDailyBoost=5
+local ESCAPES={2,5,9,14,20,27,35,45,56,70}
+M.Masteries={
+ {id='m_crawler',name='Collar Crawler',kind='monster',creatureKind='Crawler',event='ChaseEscaped',unit='escapes',hint='Survive its chases until it loses you',color={150,210,255},targets=ESCAPES},
+ {id='m_wraith',name='Tear Wraith',kind='monster',creatureKind='Wraith',event='ChaseEscaped',unit='escapes',hint='Survive its chases until it loses you',color={200,170,255},targets=ESCAPES},
+ {id='m_bellhop',name='Haunted Bellhop',kind='monster',creatureKind='Bellhop',event='ChaseEscaped',unit='escapes',hint='Survive its chases until it loses you',color={255,200,110},targets=ESCAPES},
+ {id='m_lantern',name='Lantern Watcher',kind='monster',creatureKind='Lantern',event='ChaseEscaped',unit='escapes',hint='Survive its chases until it loses you',color={255,236,150},targets=ESCAPES},
+ {id='m_neon',name='Neon Tripod',kind='monster',creatureKind='Neon',event='ChaseEscaped',unit='escapes',hint='Survive its chases until it loses you',color={120,255,190},targets=ESCAPES},
+ {id='m_collector',name='Collector',kind='collection',event='ItemPickup',unit='items',hint='Pick up cursed loot in missions',color={255,170,80},targets={15,40,75,120,180,250,340,450,580,750}},
+}
+M.GrandMastery={id='grand_mastery',name='Monster Master',hint='Master every monster and the collection',reward={tokens=0,revives=0,cosmeticIds={'title_monstermaster'}}}
 
 M.ById = {}
 for _, list in {M.Daily, M.Weekly, M.Achievements} do

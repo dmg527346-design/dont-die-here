@@ -94,6 +94,6 @@ end
 if event()then hook(event())else RS.ChildAdded:Connect(function(c)if c.Name=='MonetizeEvent'and c:IsA('RemoteEvent')then hook(c)end end)end
 Run.Heartbeat:Connect(function()
  local small=workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y<500
- menu.Size=small and UDim2.fromOffset(330,280)or UDim2.fromOffset(380,340)
+ menu.Size=InputHints.Get()=='touch'and small and UDim2.fromOffset(290,230)or small and UDim2.fromOffset(330,280)or UDim2.fromOffset(380,340)
  if menu.Visible and p:GetAttribute('MissionActive')~=true then closeMenu()end
 end)

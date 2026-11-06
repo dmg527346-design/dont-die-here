@@ -3,19 +3,27 @@ local Players = game:GetService('Players')
 local RunService = game:GetService('RunService')
 local ServerStorage = game:GetService('ServerStorage')
 local Workspace = game:GetService('Workspace')
+-- Monster intro display copies (ReplicatedStorage.IntroMonsters) are built right after makeRig below.
 local mansion = Workspace:WaitForChild('Mansion',math.huge)
+local CAT_CURSE_SPEED=1.15 -- monsters 15% faster for the rest of a level where someone answered NO to the stray cat
 while mansion:GetAttribute('Ready')~=true or mansion:GetAttribute('RuntimeReady')~=true do mansion:GetAttributeChangedSignal('RuntimeReady'):Wait() end
 local graph = game:GetService('HttpService'):JSONDecode(mansion:WaitForChild('GeneratedGraph').Value)
 local collision = mansion:WaitForChild('Collision')
 local templates = {
     {name='CollarCrawler_BlackNPC',speed=13,offset=3.0},
-    {name='TearWraith_BlackNPC',speed=14,offset=-3.0},
+    {name='TearWraith_BlackNPC',speed=16,offset=-3.0}, -- the Rusher: quick even when roaming (MonsterAbilities)
     -- Blender-built hotel bellhop (8.85 studs, authored at final size; joints come from part attributes).
     {name='HauntedBellhop_NPC',speed=13,offset=0,kind='Bellhop',scale=1},
     -- Blender-built tripod lantern stalker (9.4 studs, crouches to clear doorways).
     {name='LanternWatcher_NPC',speed=12,offset=0,kind='Lantern',scale=1},
     -- Blender-built Neon-Eyed Tripod (9.99 studs with eye stalks; spike legs, beak jaw, droning ambience).
     {name='NeonTripod_NPC',speed=12,offset=0,kind='Neon',scale=1},
+    -- rbxkit-built knitted hand-holder (7.5 studs): only sees players who are ALONE (MonsterAbilities 'Holder'). From level 5.
+    {name='LonelyMittens_NPC',speed=12,offset=0,kind='Mittens',scale=1,minLevel=5},
+    -- rbxkit-built clockwork ballerina (8.5 studs): blind while her tune plays, spots movers when it stops ('Statue'). From level 6.
+    {name='WindUpDancer_NPC',speed=11,offset=0,kind='Dancer',scale=1,minLevel=6},
+    -- rbxkit-built Yo-Yo Kid (8 studs, Story build 2026-10-29): the Homesick Yoyo's owner. Classic catch ('Normal'). From level 3.
+    {name='YoyoKid_NPC',speed=13,offset=0,kind='Yoyo',scale=1,minLevel=3},
 }
 local folder = Workspace:FindFirstChild('RoamingCreatures') or Instance.new('Folder')
 folder.Name='RoamingCreatures'; folder.Parent=Workspace
@@ -25,15 +33,21 @@ for _,e in ipairs(graph.edges) do
     table.insert(adjacency[e.a],{to=e.b,edge=e,reverse=false})
     table.insert(adjacency[e.b],{to=e.a,edge=e,reverse=true})
 end
-local TUNE={SightRange=58,NearSight=10,VisionDot=.25,PerceptionInterval=.16,ChaseSpeed=24,ChaseAngerBonus=1,BurstSpeed=24,BurstDuration=0,BurstPeriod=7,SearchMemory=6}
+local TUNE={SightRange=58,NearSight=10,VisionDot=.25,PerceptionInterval=.16,ChaseSpeed=19,ChaseAngerBonus=1,BurstSpeed=24,BurstDuration=0,BurstPeriod=7,SearchMemory=6}
 local VAN_SAFE_RADIUS=40
 -- Pacing. Monsters roam slowly and close in once they have a target; seen modes
 -- were slower than blind ones (Stalk 10 / Suspicious 9 vs Search 19 / Investigate 17).
 local MODE_SPEED={Retreat=13,Investigate=12,Search=13,Stalk=14,Suspicious=13,CheckHiding=12,Ambush=13,Steal=16} -- Steal: hurrying off with cart loot
 local PATROL_SCALE=.75 -- idle roaming at 75% of the template speed (about 9-11 studs/s)
 local CAMP_RADIUS=90 -- walking-route studs around the player spawn that idle patrols avoid
-local CALM_BASE,CALM_STEP,CALM_MIN=15,2,8
-local EASY_EXTRA_CALM,EASY_SPEED=30,.88 -- level 1 only: longer calm start, slower patrol and chase (new-player retention) -- seconds after spawning before they hunt (was 45,4,25: too passive)
+local CALM_BASE,CALM_STEP,CALM_MIN=10,2,6 -- (owner 2026-10-22: monsters barely noticed anyone)
+local EASY_EXTRA_CALM,EASY_SPEED=10,.92 -- level 1 only: longer calm start, slower patrol and chase (new-player retention) -- seconds after spawning before they hunt (was 45,4,25: too passive)
+local EASY_CHASE_SPEED=15 -- was 13; level 1 chase cap: walk 12, sprint 20, sustainable sprint-walk mix ~15, so a running player can get away (was 14; easier start 2026-10-22)
+-- Level 2 (user request 2026-10-22): chases 1.35x faster once it sees someone, and after giving up a hunt it heads off
+-- elsewhere quicker (Retreat / Patrol x1.25). MonsterIntelligence also shortens its hunt from memory on level 2.
+local LEVEL2_CHASE,LEVEL2_MOVE_ON=1.35,1.25
+local EASY_HEADSTART=15 -- owner 2026-10-26: 15 s (was 45) so the first item already has a monster around; owner 2026-10-22: 45 s (was 30, before that 60); level 1: seconds after Searching starts before the monster spawns at all (back to 60 after new-player playtime dropped, 2026-10-22)
+local LEVEL2_HEADSTART=15 -- was 25; level 2: a shorter quiet start (was none; easier start 2026-10-22)
 local CALM_NOTICE=50 -- a player this close and in sight still gets noticed while calm (was 35, 16)
 -- Sight awareness (was 58 range / 70 falloff / .25 facing / .12 floor / 10 instant / .45 dark light).
 local SIGHT_RANGE=115 -- studs a monster can spot a player in front of it (was 80)
@@ -41,9 +55,17 @@ local SIGHT_FALLOFF=135 -- visibility fades to the floor at this distance (was 9
 local SIGHT_FACING_DOT=-.15 -- ~100 degree half-angle: wide peripheral vision, only directly behind is blind
 local SIGHT_MIN_VISIBILITY=.4 -- even a far, dark, crouched player builds suspicion steadily
 local SIGHT_INSTANT_RANGE=26 -- anyone this close and visible is noticed immediately (was 20)
+-- Owner 2026-10-22 ("sometimes doesnt even detect me" when near): no blind spot up close, doorways count as in the map.
+local NEAR_SENSE,NEAR_SENSE_RUNNING=12,20 -- studs: sensed from any direction with a clear line (running: further)
+-- Ramp-up for new players (owner 2026-10-22, faster bounce): rounds 1-3 sense less close by, full power from round 4.
+local NEAR_BY_ROUND={[1]={6,10},[2]={8,14},[3]={10,17}}
+-- Spread out (owner 2026-10-22): most patrol picks skip rooms near another monster, and a 'loner' monster leaves a player
+-- another monster is already chasing alone. A player who hit it (thrown item, grenade) overrides both for PROVOKE_SECONDS.
+local SPREAD_CHANCE,SPREAD_RADIUS,PROVOKE_SECONDS=.7,45,40
+local NEAR_MARGIN=4 -- studs past a room's rectangle that still count as inside it (door gaps between rooms)
 local DARK_VISIBILITY=.75 -- visibility multiplier away from lights (was .65)
 local CATCH_RANGE=7 -- grab reach in a chase (was 4.1; players could sidestep too easily)
-local AVOID_SECONDS,AVOID_RADIUS=10,60 -- after losing sight: stay this far (route studs) from where the player was
+local AVOID_SECONDS,AVOID_RADIUS=5,45 -- was 10,60; after losing sight: stay this far (route studs) from where the player was
 local nearSpawn,disengageMonster -- defined below (route helpers)
 local function vanPosition()
  local camp=Workspace:FindFirstChild('RecoveryCamp')
@@ -63,10 +85,16 @@ local function vanSegmentSafe(a,b)
 end
 local active={}
 local Protection=require(game.ServerScriptService:WaitForChild('MonsterProtection'))
+-- Omens (RecoveryRoundServer, level 3+): read live, the level's omen changes every level.
+local function omen()local s=game.ReplicatedStorage:FindFirstChild('RecoveryRound');return s and s:GetAttribute('Omen')end
+-- One harm check for every monster hit, grab, laser and kill: 'Untouchable' blocks only the first contact of the level.
+local Sighted=Protection
+Protection={IsProtected=function(p)return Sighted.IsProtected(p)or Sighted.OmenShield(p)end,OmenShield=Sighted.OmenShield}
+local chasedAt={} -- Adrenaline omen: player -> last ChasedUntil refresh
 
 local doorByEdge={}
 for _,e in ipairs(graph.edges) do if e.kind=='door' then for _,m in ipairs(mansion.Interactive:GetChildren()) do if m:GetAttribute('Kind')=='door' and not m:GetAttribute('Closet') then local cf=m:GetAttribute('ClosedPivot');if cf and (cf.Position-Vector3.new(e.x,e.y,e.z)).Magnitude<4 then doorByEdge[e]=m;break end end end end end
-local function blocked(e)local d=doorByEdge[e];return e.boarded or (d and d:GetAttribute('Locked')==true)or(e.locked and not d)end
+local function blocked(e)local d=doorByEdge[e];return e.boarded or (d and(d:GetAttribute('Locked')==true or(d:GetAttribute('WedgedUntil')or 0)>workspace:GetServerTimeNow()))or(e.locked and not d)end -- Door Wedge gear: wedged doors route like locked ones
 local rng=Random.new()
 -- Accelerated route verification is opt-in and ignored outside Studio.
 local verificationSpeed=if RunService:IsStudio() then math.clamp(script:GetAttribute('VerificationSpeed') or 1,1,16) else 1
@@ -171,14 +199,15 @@ local function joint(model,parentName,partName,pivot,tag)
     motor.C1=part.CFrame:ToObjectSpace(world)
     motor.Parent=parent
 end
+local TALL_KINDS={Bellhop=true,Lantern=true,Neon=true,Mittens=true,Dancer=true,Yoyo=true} -- authored tall monsters (collision field size)
 local function addCorruptionVFX(model,root,kind)
     local field=Instance.new('Part')
     field.Name='CorruptionField'
     local scale=model:GetAttribute('VisualScaleMultiplier')or 1
-    field.Size=(kind=='Crawler' and Vector3.new(5.4,5.1,4.2) or (kind=='Bellhop' or kind=='Lantern' or kind=='Neon') and Vector3.new(3.2,7.6,2.2) or Vector3.new(4.3,7.5,2.9))*scale
+    field.Size=(kind=='Crawler' and Vector3.new(5.4,5.1,4.2) or TALL_KINDS[kind] and Vector3.new(3.2,7.6,2.2) or Vector3.new(4.3,7.5,2.9))*scale
     field.Transparency=1;field.CanCollide=false;field.CanTouch=false;field.CanQuery=false
     field.Anchored=false;field.Massless=true
-    field.CFrame=root.CFrame*CFrame.new(0,(kind=='Crawler' and 2.3 or (kind=='Bellhop' or kind=='Lantern' or kind=='Neon') and 3.9 or 3.5)*scale,0)
+    field.CFrame=root.CFrame*CFrame.new(0,(kind=='Crawler' and 2.3 or TALL_KINDS[kind] and 3.9 or 3.5)*scale,0)
     field.Parent=model
     local weld=Instance.new('WeldConstraint')
     weld.Part0=root;weld.Part1=field;weld.Parent=field
@@ -290,11 +319,13 @@ local function addFlailingArms(model)
  end
 end
 
-local function makeRig(template,owner,spawn)
+local function makeRig(template,owner,spawn,display) -- display: a folder to build an unparented-from-the-game copy into (intro)
     local model=ServerStorage:WaitForChild(template.name):Clone()
     local visualScale=template.scale or (template.name:find('Wraith')and WRAITH_VISUAL_SCALE or MONSTER_VISUAL_SCALE)
     if visualScale~=1 then model:ScaleTo(model:GetScale()*visualScale) end
     model:SetAttribute('VisualScaleMultiplier',visualScale)
+    -- Always streamed to every player: jumpscares clone the monster on the scared player's own device.
+    model.ModelStreamingMode=Enum.ModelStreamingMode.Persistent
     model.Name=template.name..'_'..owner.UserId
     model:SetAttribute('CreatureKind',template.kind or (template.name:find('Crawler') and 'Crawler' or 'Wraith'))
     local authored=template.kind~=nil
@@ -335,7 +366,7 @@ local function makeRig(template,owner,spawn)
             end
             if not progressed then error('Bellhop joint without parent: '..pending[1].Name) end
         end
-        model.Parent=folder
+        model.Parent=display or folder
         root.CFrame=CFrame.new(spawn)*CFrame.Angles(0,rng:NextNumber(-math.pi,math.pi),0)
         addCorruptionVFX(model,root,kind)
         return model,root
@@ -369,10 +400,37 @@ local function makeRig(template,owner,spawn)
         end
     end
     addFlailingArms(model)
-    model.Parent=folder
+    model.Parent=display or folder
     root.CFrame=CFrame.new(spawn)*CFrame.Angles(0,rng:NextNumber(-math.pi,math.pi),0)
     addCorruptionVFX(model,root,kind)
     return model,root
+end
+-- Monster intro cutscene (owner 2026-10-26; rigged 2026-10-27 "they just float and are super stiff"): script-free display
+-- copies of every monster for MonsterIntroClient, built by makeRig itself (same Motor6Ds, flail arms and corruption
+-- VFX as the real ones), so CreatureAnimateClient moves them with the real procedural animation. The root stays at its
+-- rest pose (rig-consistent pivot); nothing collides, touches or is queried; no scripts, no sounds.
+do
+ local RS=game:GetService('ReplicatedStorage')
+ if not RS:FindFirstChild('IntroMonsters')then
+  local intro=Instance.new('Folder');intro.Name='IntroMonsters'
+  for i,n in {'CollarCrawler_BlackNPC','TearWraith_BlackNPC','HauntedBellhop_NPC','LanternWatcher_NPC','NeonTripod_NPC'}do
+   local template;for _,t in templates do if t.name==n then template=t end end
+   if template and ServerStorage:FindFirstChild(n)then
+    local ok,m,root=pcall(makeRig,template,{UserId=0},Vector3.zero,intro)
+    if ok and m and root then
+     m.Name=n;m:SetAttribute('IntroOrder',i);m:SetAttribute('OwnerUserId',nil)
+     for _,j in root:GetChildren()do -- put the root back where the joints were built (makeRig turned it to a random yaw)
+      if j:IsA('Motor6D')and j.Part0==root and j.Part1 then root.CFrame=j.Part1.CFrame*j.C1*j.C0:Inverse();break end
+     end
+     for _,d in m:GetDescendants()do
+      if d:IsA('LuaSourceContainer')or d:IsA('Sound')then d:Destroy()
+      elseif d:IsA('BasePart')then d.CanCollide=false;d.CanQuery=false;d.CanTouch=false end
+     end
+    else warn('[IntroMonsters] '..n..': '..tostring(m))end
+   end
+  end
+  intro.Parent=RS
+ end
 end
 
 local sightParams=RaycastParams.new();sightParams.FilterType=Enum.RaycastFilterType.Include;sightParams.FilterDescendantsInstances={collision,mansion.Interactive};sightParams.RespectCanCollide=true
@@ -410,16 +468,58 @@ local function clearSegment(a,b)
  local delta=b-a
  return delta.Magnitude<.01 or Workspace:Blockcast(CFrame.new(a+Vector3.new(0,2.4,0)),MOVE_CLEARANCE_SIZE,delta,sightParams)==nil
 end
+-- Stairs: a creature part-way up a flight finishes it before anything else. Re-planning from there used to start at
+-- a floor-level room point and cut a straight line through the steps, floor or ceiling.
+local function stairEdgeOf(roomName)
+ for _,e in ipairs(graph.edges)do if e.kind=='stairs'and e.waypoints and(e.a==roomName or e.b==roomName)then return e end end
+end
+local function onFlight(y)local f=y/FLOOR;return math.abs(f-math.floor(f+.5))*FLOOR>.5 end
+-- Distance from p to the nearest authored stair flight (polyline through its waypoints).
+local function flightGap(p)
+ local best=math.huge
+ for _,e in ipairs(graph.edges)do
+  if e.kind=='stairs'and e.waypoints then
+   local wp=e.waypoints
+   for i=1,#wp-1 do
+    local a,b=Vector3.new(unpack(wp[i])),Vector3.new(unpack(wp[i+1]));local ab=b-a
+    local t=ab:Dot(ab)>0 and math.clamp((p-a):Dot(ab)/ab:Dot(ab),0,1)or 0
+    best=math.min(best,(a+ab*t-p).Magnitude)
+   end
+  end
+ end
+ return best
+end
+local function stairLeg(pos,destLevel)
+ if not onFlight(pos.Y)then return nil end
+ local bestEdge,bestI,bestD
+ for _,e in ipairs(graph.edges)do
+  if e.kind=='stairs'and e.waypoints then
+   for i,p in ipairs(e.waypoints)do local d=(Vector3.new(unpack(p))-pos).Magnitude;if not bestD or d<bestD then bestEdge,bestI,bestD=e,i,d end end
+  end
+ end
+ if not bestEdge then return nil end
+ local wp,leg=bestEdge.waypoints,{} -- authored bottom to top
+ if destLevel>0 then for i=bestI,#wp do table.insert(leg,Vector3.new(unpack(wp[i])))end
+ else for i=bestI,1,-1 do table.insert(leg,Vector3.new(unpack(wp[i])))end end
+ return leg
+end
 local function routeTo(state,pos,mode)
 
  if nearVan(pos,3) then return false end
  local current=roomAt(state.root.Position);local dest=roomAt(pos);if not current or not dest then return false end
  -- Only a live chase may enter the spawn area; nothing else heads there.
  if mode~='Chase' and nearSpawn and nearSpawn(dest) then return false end
+ local leg=stairLeg(state.root.Position,dest.level)
+ if leg then current=roomAt(leg[#leg])or current end
  local links=shortest(current.name,dest.name);if not links then return false end
   local goal=safePoint(dest,pos,2)
+ -- A goal inside a stair room (e.g. a player on the landing) goes to that floor's end of the flight, never mid-air over the shaft.
+ if dest.type=='Stair'then local e=stairEdgeOf(dest.name);if e then local wp=e.waypoints;goal=Vector3.new(unpack(dest.level>0 and wp[#wp]or wp[1]))end end
  state.room=current;state.destination=dest
- if clearSegment(state.root.Position,goal) then state.points={goal}
+ if leg then
+  state.points=leg
+  for _,p in ipairs(makeWaypoints(current,links,goal))do table.insert(state.points,p)end
+ elseif clearSegment(state.root.Position,goal) then state.points={goal}
  else
   state.points=makeWaypoints(current,links,goal)
   -- Skip room-center detours only when the actual corridor is clear.
@@ -446,7 +546,8 @@ local function retreat(state,now,avoid)
   if away.Magnitude<.1 then away=state.root.CFrame.LookVector end
   local escape=safePoint(current,state.root.Position+away.Unit*8,2)
   if (escape-state.root.Position).Magnitude>1 and (escape-avoid).Magnitude>(state.root.Position-avoid).Magnitude and clearSegment(state.root.Position,escape) then
-   state.points={escape};state.pointIndex=1;state.destination=current
+   -- Step away first, then keep going on the long route to the far room (a lone 8-stud step left a fleeing monster standing).
+   if state.points then table.insert(state.points,state.pointIndex or 1,escape) else state.points={escape};state.pointIndex=1;state.destination=current end
   end
  end
  state.retreatUntil=now+4
@@ -464,6 +565,13 @@ local Brain=BrainModule.New({
  sees=sees,nearVan=nearVan,routeTo=routeTo,setMode=setMode,routeDistance=routeDistance,level=Topology.Level,
  disengage=function(s,avoid) if disengageMonster then disengageMonster(s,avoid) end end,
  reachable=function(a,b)return a and b and shortest(a.name,b.name)~=nil end,
+ crowded=function(s,p) -- another monster already chases p, and p has not provoked s
+  if s.target==p then return false end
+  local at=s.model:GetAttribute('ProvokedAt')
+  if s.model:GetAttribute('ProvokedBy')==p.UserId and at and workspace:GetServerTimeNow()-at<PROVOKE_SECONDS then return false end
+  for _,list in pairs(active)do for _,o in list do if o~=s and o.target==p and o.model.Parent then return true end end end
+  return false
+ end,
  closets=function()local f=mansion:FindFirstChild('Closets');return f and f:GetChildren()or{}end,
  round=function()return game.ReplicatedStorage:FindFirstChild('RecoveryRound')end,
 })
@@ -474,33 +582,60 @@ local function lightVisibility(pos)
  local value=DARK_VISIBILITY
  for _,l in lights do
   local part=l.Parent
-  if l.Enabled and part:IsA('BasePart') and (part.Position-pos).Magnitude<l.Range then value=math.max(value,.8);break end
+  -- part is nil for a light destroyed by a map rebuild (live error, 559x on V1369)
+  if part and l.Enabled and part:IsA('BasePart') and (part.Position-pos).Magnitude<l.Range then value=math.max(value,.8);break end
  end
  return value
 end
 local function eligiblePlayer(p)
  local c=p.Character;local r=c and c:FindFirstChild('HumanoidRootPart');local h=c and c:FindFirstChildOfClass('Humanoid')
- return r,h,h and h.Health>0 and p:GetAttribute('MissionActive')==true and not p:GetAttribute('RoundDead')
+ -- A close-up yes/no card is up (ChoiceDeciding): monsters can't see, hear or reach them (owner 2026-10-25).
+ return r,h,h and h.Health>0 and p:GetAttribute('MissionActive')==true and not p:GetAttribute('RoundDead') and p:GetAttribute('ChoiceDeciding')~=true
 end
+-- Monster roles (2026-10-22): per-kind attacks, 100 HP damage, spinning laser, closet seeker. See MonsterAbilities.
+local Abilities=require(script:WaitForChild('MonsterAbilities')).New({Jumpscare=require(script:WaitForChild('MonsterJumpscare')),Protection=Protection,Sighted=Sighted,NearVan=nearVan,Audio=Audio,
+ retreat=function(s,now,avoid)retreat(s,now,avoid)end,routeTo=routeTo,setMode=setMode,sees=sees,eligible=eligiblePlayer,
+ closets=function()local f=mansion:FindFirstChild('Closets');return f and f:GetChildren()or{}end,
+ -- Lonely Mittens / Wind-Up Dancer (Monsters build 2026-10-27): the recovery cart (company for a soloist, a rolling cart
+ -- gives you away) and a way to wipe what the brain remembers about one player (so a dropped hunt does not turn into a search).
+ cart=function()local c=mansion.Interactive:FindFirstChild('RecoveryCart');return c and c:GetAttribute('Kind')=='cart'and c.PrimaryPart and c or nil end,
+ forget=function(s,p)if s.brain and s.brain.knowledge then s.brain.knowledge[p.UserId]=nil end;if s.target==p then s.target=nil end end})
 local function perceive(state,now)
  if nearVan(state.root.Position,4)then state.target=nil;return end
  local observations={}
+ -- Level 1 is the gentle first impression: monsters see 33% less far (range, falloff and instant-notice).
+ local rr=game:GetService('ReplicatedStorage'):FindFirstChild('RecoveryRound')
+ local hush=omen()=='Hush' and .8 or 1 -- Hush omen: sight range, near sense and hearing x0.8 (owner 2026-10-26: was .6)
+ local levelSight=(rr and rr:GetAttribute('Round')==1 and .85 or 1)*hush -- was .67
  for _,p in Players:GetPlayers()do
+  -- ...and forget them: no last-seen spot to walk to and stand on while they choose.
+  local erased=state.model:GetAttribute('ErasedUserId')==p.UserId and now<(state.model:GetAttribute('ErasedUntil')or 0) -- TrailEraser (ItemBatch9)
+  if p:GetAttribute('ChoiceDeciding')==true or erased then
+   if state.brain then state.brain.knowledge[p.UserId]=nil end
+   if state.target==p then state.target=nil end
+   if erased then state.lastSeen=nil;state.lastSeenPosition=nil;state.clue=nil;state.clueUntil=nil;state.searchUntil=nil end
+  end
   local r,h,alive=eligiblePlayer(p)
   if alive and r then
    local room=roomAt(r.Position)
-   local inMap=room and r.Position.X>=room.x1 and r.Position.X<=room.x2 and r.Position.Z>=room.z1 and r.Position.Z<=room.z2
+   local inMap=room and r.Position.X>=room.x1-NEAR_MARGIN and r.Position.X<=room.x2+NEAR_MARGIN and r.Position.Z>=room.z1-NEAR_MARGIN and r.Position.Z<=room.z2+NEAR_MARGIN -- doorways sit between room rectangles
    local testProtected=workspace:GetServerTimeNow()<(p:GetAttribute('ClosetProtectedUntil')or 0) or p:GetAttribute('AdminGod')==true
-   if inMap and not nearVan(r.Position,3) and not testProtected and now>(p:GetAttribute('DisguiseUntil')or 0) then
+   if inMap and not nearVan(r.Position,3) and not testProtected and now>(p:GetAttribute('DisguiseUntil')or 0) and not Abilities:Ignores(state,p) and p:GetAttribute('ChoiceDeciding')~=true then -- a close-up card is up: not a target at all (owner 2026-10-25)
     local hidden=p:GetAttribute('Hiding')==true or p:GetAttribute('ClosetState')~=nil
+    local fogged=now<(p:GetAttribute('FogCoverUntil')or 0)or now<(state.model:GetAttribute('FogBlindUntil')or 0) -- PocketFogger (ItemBatch6): only near sense in fog
     local pos=r.Position;local delta=pos-(state.root.Position+Vector3.new(0,2.5,0));local distance=delta.Magnitude
-    local cursed=p:GetAttribute('BlackCatCurse')and 1.45 or 1
-    local facing=distance<.1 or state.root.CFrame.LookVector:Dot(delta.Unit)>SIGHT_FACING_DOT
-    if not hidden and distance<SIGHT_RANGE*cursed and facing and sees(state,pos)then
-     local speed=Vector3.new(r.AssemblyLinearVelocity.X,0,r.AssemblyLinearVelocity.Z).Magnitude
-     local stance=p:GetAttribute('Crouching')and .55 or 1
+    local cursed=(p:GetAttribute('BlackCatCurse')and 1.45 or 1)*((p:GetAttribute('CrownedUntil')or 0)>workspace:GetServerTimeNow()and 1.3 or 1)*levelSight*(state.dull or 1)*(p:GetAttribute('OmenShrunk')and .75 or 1) -- a dull monster (the Lantern) sees less far
+    local speed=Vector3.new(r.AssemblyLinearVelocity.X,0,r.AssemblyLinearVelocity.Z).Magnitude
+    -- Close by it senses you in any direction (no blind spot right behind it); running carries further.
+    local near=NEAR_BY_ROUND[state.level or 1] or {NEAR_SENSE,NEAR_SENSE_RUNNING}
+    local close=distance<(speed>12 and near[2] or near[1])*hush
+    local facing=close or distance<.1 or state.root.CFrame.LookVector:Dot(delta.Unit)>SIGHT_FACING_DOT
+    -- Torso first, then the head: a low monster's ray to the torso clips table-height furniture boxes.
+    if not hidden and(close or not fogged)and distance<SIGHT_RANGE*cursed and facing and(sees(state,pos)or sees(state,pos+Vector3.new(0,1.6,0)))then
+     local stance=p:GetAttribute('Crouching')and((state.level or 1)>=3 and .75 or .55)or 1 -- crouching hides less from round 3
      local visibility=math.clamp((1-distance/(SIGHT_FALLOFF*cursed))*lightVisibility(pos)*stance*(speed>18 and 1.7 or speed>2 and 1.2 or .85),SIGHT_MIN_VISIBILITY,2.5)
-     if distance<SIGHT_INSTANT_RANGE then visibility=2.5 end
+     if state.dull then visibility*=state.dull end
+     if close or distance<SIGHT_INSTANT_RANGE*levelSight*(state.dull or 1) then visibility=2.5 end
      table.insert(observations,{player=p,position=pos,velocity=r.AssemblyLinearVelocity,visibility=visibility,gaze=r.CFrame.LookVector})
     end
    end
@@ -550,13 +685,27 @@ nearSpawn=function(r)
     return campCache[r.name]
 end
 local function chooseDestination(state)
+    -- Part-way up a flight: walk to its nearer end first; the next pick starts from a real floor.
+    local pos=state.root.Position
+    local leg=stairLeg(pos,pos.Y>=FLOOR/2 and 1 or 0)
+    if leg then
+     state.points=leg;state.pointIndex=1;state.destination=roomAt(leg[#leg])or state.room
+     return
+    end
     local candidates={};local least=math.huge
+    local others={}
+    if rng:NextNumber()<SPREAD_CHANCE and not (state.model:GetAttribute('ProvokedAt') and workspace:GetServerTimeNow()-state.model:GetAttribute('ProvokedAt')<PROVOKE_SECONDS) then
+     for _,list in pairs(active)do for _,o in list do if o~=state and o.model.Parent and o.root then table.insert(others,o.root.Position);if o.destination then table.insert(others,center(o.destination))end end end end
+    end
+    local function crowdedRoom(r)local c=center(r);for _,q in others do if (q-c).Magnitude<SPREAD_RADIUS then return true end end;return false end
     -- Nearby rooms first, then further afield, before ever patrolling the spawn area.
-    for _,pass in ipairs({{hops=2,avoid=true},{hops=6,avoid=true},{hops=2,avoid=false}}) do
+    -- A roamy monster (the Lantern) heads for rooms several doors away instead of the next one over.
+    local passes=state.roamy and {{hops=5,min=2,avoid=true},{hops=8,avoid=true},{hops=3,avoid=false}} or {{hops=2,avoid=true},{hops=6,avoid=true},{hops=2,avoid=false}}
+    for _,pass in ipairs(passes) do
         for _,r in ipairs(graph.rooms) do
             local localRoute=shortest(state.room.name,r.name)
             local avoiding=pass.avoid and state.avoidUntil and os.clock()<state.avoidUntil and routeDistance(center(r)+Vector3.new(0,2,0),state.avoidPoint)<AVOID_RADIUS
-            if r.name~=state.room.name and not nearVan(center(r),4) and localRoute and #localRoute<=pass.hops and not (pass.avoid and nearSpawn(r)) and not avoiding then
+            if r.name~=state.room.name and not nearVan(center(r),4) and localRoute and #localRoute<=pass.hops and #localRoute>=(pass.min or 0) and not (pass.avoid and nearSpawn(r)) and not avoiding and not (pass.avoid and crowdedRoom(r)) then
                 local count=state.visits[r.name] or 0
                 if count<least then least=count;candidates={r}
                 elseif count==least then table.insert(candidates,r) end
@@ -798,10 +947,31 @@ local function seekCart(state,now)
  return routeTo(state,Vector3.new(body.X,Topology.Level(body.Y)*FLOOR,body.Z)+side*4.5,'Patrol')
 end
 
+-- Collar Crawler = weeping angel (owner, 2026-10-24): it cannot move or attack while any living player is looking at it.
+-- Each client reports the crawlers on its screen and not blocked by walls (CreatureAnimateClient, ~8 Hz).
+local WATCH_HOLD=.35 -- seconds a sighting keeps it frozen (covers a missed report)
+local sightEvent=game:GetService('ReplicatedStorage'):FindFirstChild('MonsterSightEvent')or Instance.new('RemoteEvent')
+sightEvent.Name='MonsterSightEvent';sightEvent.Parent=game:GetService('ReplicatedStorage')
+local watchedUntil=setmetatable({},{__mode='k'})
+sightEvent.OnServerEvent:Connect(function(p,list)
+ if type(list)~='table'or #list>8 or p:GetAttribute('MissionActive')~=true or p:GetAttribute('RoundDead')then return end
+ local c=p.Character;local h=c and c:FindFirstChildOfClass('Humanoid');local head=c and c:FindFirstChild('Head')
+ if not h or h.Health<=0 or not head then return end
+ for _,m in list do
+  if typeof(m)=='Instance'and m:IsA('Model')and m.Parent and m:GetAttribute('CreatureKind')=='Crawler'and m.PrimaryPart and(m.PrimaryPart.Position-head.Position).Magnitude<160 then
+   watchedUntil[m]=os.clock()+WATCH_HOLD
+  end
+ end
+end)
 local function step(state,dt)
     if not state.model.Parent then return end
     local now=os.clock()
-    if nearVan(state.root.Position,4) then
+    if state.model:GetAttribute('CreatureKind')=='Crawler'then
+     local watched=now<(watchedUntil[state.model]or 0)or now<(state.model:GetAttribute('GnomeWatchedUntil')or 0) -- Watch Gnome (MonsterBatch) stares it frozen too
+     if state.model:GetAttribute('Watched')~=watched then state.model:SetAttribute('Watched',watched)end
+     if watched then state.model:SetAttribute('Walking',false);state.lastProgress=now;state.stallPosition=nil;state.stallSince=nil;return end
+    end
+    if nearVan(state.root.Position,4) and not state.hunt then -- the pup's Lantern stays on its player (Studio van test) and never wanders
         state.target=nil;state.lastSeen=nil;state.clue=nil;state.points=nil
         setMode(state,'AvoidVan')
         local v=vanPosition();local away=Vector3.new(state.root.Position.X-v.X,0,state.root.Position.Z-v.Z)
@@ -819,11 +989,16 @@ local function step(state,dt)
     elseif state.mode=='AvoidVan' then
         state.points=nil;state.pauseUntil=0;setMode(state,'Patrol')
     end
+    if state.mode=='Chase' and typeof(state.target)=='Instance' and state.target:IsA('Player') and os.clock()>(chasedAt[state.target] or 0)+.25 then
+        chasedAt[state.target]=os.clock();state.target:SetAttribute('ChasedUntil',workspace:GetServerTimeNow()+1.2) -- Adrenaline omen reads it
+    end
+    -- A monster in the middle of its attack (carrying, lasering, pulling someone out) does nothing else.
+    if Abilities:Step(state,now,dt) then state.stallPosition=nil;state.stallSince=nil;state.lastProgress=now;return end
     -- Gear shop: a blasted monster flees and a hypnotized one forgets players; neither perceives or catches anyone.
     local fleeing=now<(state.model:GetAttribute('FleeUntil') or 0);local hypnotized=now<(state.model:GetAttribute('HypnoUntil') or 0)
     if fleeing or hypnotized or state.carry then state.target=nil;state.catching=nil;if hypnotized and state.mode=='Chase' then setMode(state,'Patrol')end
     elseif now>(state.perceptionAt
- or 0) and not (state.debugUntil and now<state.debugUntil) then perceive(state,now);state.perceptionAt=now+TUNE.PerceptionInterval end
+ or 0) and not (state.debugUntil and now<state.debugUntil) and not Abilities:HoldsRoute(state,now) then perceive(state,now);state.perceptionAt=now+TUNE.PerceptionInterval end
     if now<(state.model:GetAttribute('StunnedUntil') or 0) or now<(state.model:GetAttribute('CalmUntil') or 0) then state.stallPosition=nil;state.stallSince=nil;state.model:SetAttribute('Walking',false);return end
     if state.catching then
         if state.catching.Parent and state.catching:GetAttribute('MonsterJumpscareActive')then state.stallPosition=nil;state.stallSince=nil;state.model:SetAttribute('Walking',false);return end
@@ -832,8 +1007,8 @@ local function step(state,dt)
     if now>(state.lastGrab or 0)+2.5 then
         for _,player in ipairs(Players:GetPlayers()) do
             local char=player.Character;local root=char and char:FindFirstChild('HumanoidRootPart');local hum=char and char:FindFirstChildOfClass('Humanoid')
-            if state.mode=='Chase' and state.target==player and root and hum and hum.Health>0 and not nearVan(root.Position,3) and not Protection.IsProtected(player) and now>(player:GetAttribute('DisguiseUntil') or 0) and Vector3.new(root.Position.X-state.root.Position.X,0,root.Position.Z-state.root.Position.Z).Magnitude<CATCH_RANGE and math.abs(root.Position.Y-state.root.Position.Y)<12 and sees(state,root.Position) then
-                if require(script.MonsterJumpscare).Start(player,state.model)then
+            if state.mode=='Chase' and state.target==player and not Abilities:Ignores(state,player) and root and hum and hum.Health>0 and not nearVan(root.Position,3) and not Protection.IsProtected(player) and now>(player:GetAttribute('DisguiseUntil') or 0) and Vector3.new(root.Position.X-state.root.Position.X,0,root.Position.Z-state.root.Position.Z).Magnitude<CATCH_RANGE and math.abs(root.Position.Y-state.root.Position.Y)<12 and sees(state,root.Position) then
+                if Abilities:Catch(state,player,now) or require(script.MonsterJumpscare).Start(player,state.model)then
                  state.lastGrab=now;state.catching=player;state.model:SetAttribute('Walking',false)
                  state.model:SetAttribute('LastGrabUserId',player.UserId);state.model:SetAttribute('LurePosition',root.Position);state.model:SetAttribute('LureUntil',now+8)
                  return
@@ -869,6 +1044,11 @@ local function step(state,dt)
      end
     end
     local target=state.points and state.points[state.pointIndex]
+    -- Never step off a flight part-way: a target away from the stairs first gets the rest of the flight.
+    if target and onFlight(pos.Y)and flightGap(target)>1.5 then
+     local leg=stairLeg(pos,target.Y>=FLOOR/2 and 1 or 0)
+     if leg then for i=#leg,1,-1 do table.insert(state.points,state.pointIndex,leg[i])end;target=state.points[state.pointIndex]end
+    end
 
     if not target then
         -- Reached the drop room with stolen loot: leave it there.
@@ -879,7 +1059,7 @@ local function step(state,dt)
         if not state.destination then state.pauseUntil=now+.5;state.model:SetAttribute('Walking',false);return end
         state.visits[state.destination.name]=(state.visits[state.destination.name] or 0)+1
         state.room=state.destination;state.points=nil
-        state.pauseUntil=now+(state.mode=='Patrol' and rng:NextNumber(.03,.12) or .1)
+        state.pauseUntil=now+(state.roamy and .02 or state.mode=='Patrol' and rng:NextNumber(.03,.12) or .1)
         state.model:SetAttribute('CurrentRoom',state.room.name)
         state.model:SetAttribute('Walking',false)
         return
@@ -929,14 +1109,17 @@ local function step(state,dt)
         return
     end
     local direction=delta.Unit
-    local speed=state.mode=='Chase' and (TUNE.ChaseSpeed+1*(state.difficulty or 0)+(state.anger or 0)*TUNE.ChaseAngerBonus) or MODE_SPEED[state.mode] or state.speed*PATROL_SCALE
-     if state.easy and state.mode=='Chase' then speed*=EASY_SPEED end
+    local speed=state.mode=='Chase' and (TUNE.ChaseSpeed+2.5*(state.difficulty or 0)+(state.anger or 0)*TUNE.ChaseAngerBonus) or MODE_SPEED[state.mode] or state.speed*PATROL_SCALE
+     if state.easy and state.mode=='Chase' then speed=math.min(speed*EASY_SPEED,EASY_CHASE_SPEED) end
+     if state.level==2 then if state.mode=='Chase' then speed*=LEVEL2_CHASE elseif state.mode=='Retreat' or state.mode=='Patrol' then speed*=LEVEL2_MOVE_ON end end
+    local roleSpeed=Abilities:Speed(state,state.mode);if roleSpeed then speed=roleSpeed end
     if state.mode=='Chase' then
      state.chaseStart=state.chaseStart or now
      local cycle=(now-state.chaseStart)%TUNE.BurstPeriod
      if cycle>2 and cycle<2+TUNE.BurstDuration and (state.anger or 0)>.35 then speed=TUNE.BurstSpeed+6*(state.difficulty or 0);soundCue(state,'Rush') end
     else state.chaseStart=nil end
     if now<(state.model:GetAttribute('FleeUntil') or 0) then speed=math.max(speed,24) elseif now<(state.model:GetAttribute('HypnoUntil') or 0) then speed=speed*.55 end
+    if mansion:GetAttribute('CatCurse')==true then speed*=CAT_CURSE_SPEED end -- the stray cat was turned to stone (CloseUpChoices)
     state.model:SetAttribute('MoveSpeed',speed)
     local travel=math.min(flat,speed*dt)
     if now>(state.doorCheckAt or 0)then
@@ -1110,8 +1293,9 @@ local function refreshRoster()
  clearRoster();rosterRound=level
  local token=rosterGeneration
  local list={};active.mission=list
- local count=if level<=2 then 1 elseif level<=5 then 2 elseif level<=9 then 3 else 4 -- gentler late game (was level-1, up to 6): L4+ was near impossible
- local difficulty=1-math.exp(-math.max(0,level-2)/10)
+ local oneKind
+ local count=if level<=1 then 1 elseif level<=4 then 2 elseif level<=8 then 3 else 4 -- two from level 2 (owner 2026-10-22: monsters barely noticed anyone); gentler late game (was level-1, up to 6): L4+ was near impossible
+ local difficulty=1-math.exp(-math.max(0,level-2)/4) -- L3 .22, L4 .39, L5 .53 (was /10)
  roundState:SetAttribute('MonsterCountTarget',count)
  roundState:SetAttribute('MonsterDifficultyLevel',level)
  local anchor=roomAt(mansion:GetAttribute('SpawnPosition')or workspace.SpawnLocation.Position)
@@ -1120,6 +1304,15 @@ local function refreshRoster()
  task.spawn(function()
   local ok,err=xpcall(function()
   local validator=require(script.ValidMonsterSpawn)
+  if level<=2 then -- head start: new players get a quiet minute to loot and learn the van before anything hunts (level 2: 25 s)
+   local headstart=level==1 and EASY_HEADSTART or LEVEL2_HEADSTART
+   roundState:SetAttribute('MonsterHeadstartUntil',workspace:GetServerTimeNow()+headstart)
+   local wakeAt=os.clock()+headstart
+   while os.clock()<wakeAt do
+    if token~=rosterGeneration or roundState:GetAttribute('Phase')~='Searching' and roundState:GetAttribute('Phase')~='Selling' and roundState:GetAttribute('Phase')~='Returning' then return end
+    task.wait(.5)
+   end
+  end
   for index=1,count do
    if token~=rosterGeneration then return end
    local choice,total
@@ -1130,6 +1323,26 @@ local function refreshRoster()
    until choice
    if token~=rosterGeneration then return end
    local template=templates[(index+level-2)%#templates+1]
+   -- Late debut (Monsters build 2026-10-27): a template whose minLevel is above this level hands its slot to the next
+   -- template in rotation order that is allowed here and not already on this level's roster (levels 1-4 are unchanged).
+   if (template.minLevel or 1)>level then
+    for step=1,#templates do
+     local t=templates[(index+level-2+step)%#templates+1]
+     local taken=false;for _,s in ipairs(list)do if s.model.Name:sub(1,#t.name)==t.name then taken=true end end
+     if (t.minLevel or 1)<=level and not taken then template=t;break end
+    end
+   end
+   -- OneKind omen: the whole level uses one template, picked once (skip the Lantern on a map without closets).
+   if index==1 then
+    oneKind=nil
+    if omen()=='OneKind' then
+     local hasClosets=mansion:FindFirstChild('Closets')and #mansion.Closets:GetChildren()>0
+     local pool={};for _,t in ipairs(templates)do if (t.kind~='Lantern' or hasClosets) and (t.minLevel or 1)<=level then table.insert(pool,t)end end
+     oneKind=pool[rng:NextInteger(1,#pool)]
+     roundState:SetAttribute('OmenMonster',({Bellhop='Bellhop',Lantern='Lantern Watcher',Neon='Neon Tripod',Mittens='Lonely Mittens',Dancer='Wind-Up Dancer',Yoyo='Yo-Yo Kid'})[oneKind.kind or '']or(oneKind.name:find('Crawler')and 'Crawler' or 'Wraith'))
+    else roundState:SetAttribute('OmenMonster',nil)end
+   end
+   if oneKind then template=oneKind end
    -- Studio-only: set this script's StudioForceTemplate attribute (e.g. 'Bellhop') to test one monster.
    local forced=RunService:IsStudio() and script:GetAttribute('StudioForceTemplate')
    if forced then for _,t in ipairs(templates)do if t.name==forced or t.kind==forced then template=t end end end
@@ -1141,7 +1354,7 @@ local function refreshRoster()
    model:SetAttribute('SpawnCandidateCount',total);model:SetAttribute('DifficultyLevel',level)
    local _,yaw,_=root.CFrame:ToOrientation()
    table.insert(list,{model=model,root=root,speed=(template.speed+2*difficulty)*verificationSpeed*(level==1 and EASY_SPEED or 1),room=choice.room,visits={[choice.room.name]=1},
-    mode='Patrol',anger=0,difficulty=difficulty,spawnedAt=os.clock(),easy=level==1,calmUntil=os.clock()+math.max(CALM_MIN,CALM_BASE-(level-1)*CALM_STEP)+(level==1 and EASY_EXTRA_CALM or 0),calmNotice=CALM_NOTICE,points=nil,pointIndex=1,pauseUntil=os.clock()+.2,
+    mode='Patrol',anger=0,difficulty=difficulty,spawnedAt=os.clock(),easy=level==1,level=level,calmUntil=os.clock()+math.max(CALM_MIN,CALM_BASE-(level-1)*CALM_STEP)+(level==1 and EASY_EXTRA_CALM or 0),calmNotice=CALM_NOTICE,points=nil,pointIndex=1,pauseUntil=os.clock()+.2,
     lastPosition=choice.point,lastProgress=os.clock(),yaw=yaw})
    roundState:SetAttribute('MonsterCount',#list)
   end
@@ -1188,14 +1401,115 @@ if RunService:IsStudio() then
  end)
 end
 local slainRound -- see roster audit below
+-- A slain monster comes back RETURN_AFTER seconds later, or at once when its Monster Orb is sold, whichever
+-- comes first (once only): same monster, placed like a level-start spawn (validated room, far from every
+-- player and away from the van). Only on the level it was slain in.
+local RETURN_AFTER=150
+local returnCount=0
+local slainPending={} -- slain model name -> level, until it has come back
+local function respawnSlain(name,slainLevel)
+ local level=roundState:GetAttribute('Round')or 0
+ if typeof(name)~='string' or level<1 or rosterRound~=level or (slainLevel~=nil and slainLevel~=level) then return false end
+ local phase=roundState:GetAttribute('Phase')
+ if phase~='Searching' and phase~='Selling' and phase~='Returning' then return false end
+ if script:GetAttribute('AdminNoMonsters')==true then return false end
+ local template;for _,t in ipairs(templates)do if name:sub(1,#t.name)==t.name then template=t;break end end
+ if not template then return false end
+ local owner
+ for _,p in Players:GetPlayers()do
+  local h=p.Character and p.Character:FindFirstChildOfClass('Humanoid')
+  if p:GetAttribute('MissionActive') and h and h.Health>0 then owner=p;break end
+ end
+ if not owner then return false end
+ local anchor=roomAt(mansion:GetAttribute('SpawnPosition')or workspace.SpawnLocation.Position)
+ if not anchor then return false end
+ local token=rosterGeneration
+ local validator=require(script.ValidMonsterSpawn)
+ local choice,total
+ for _=1,20 do
+  if token~=rosterGeneration then return false end
+  choice,total=validator.Select(mansion,graph,anchor,center,shortest,makeWaypoints,rng,function(p)return not nearVan(p,4)end,routeDistance)
+  if choice then break end
+  task.wait(1)
+ end
+ if not choice or token~=rosterGeneration or rosterRound~=level then return false end
+ local list=active.mission;if not list then list={};active.mission=list end
+ local difficulty=1-math.exp(-math.max(0,level-2)/4) -- L3 .22, L4 .39, L5 .53 (was /10)
+ local model,root=makeRig(template,owner,choice.point)
+ returnCount+=1;model.Name=template.name..'_Level'..level..'_Returned'..returnCount
+ model:SetAttribute('CurrentRoom',choice.room.name);model:SetAttribute('SpawnValidated',true);model:SetAttribute('ReturnedFromOrb',true)
+ model:SetAttribute('SpawnPosition',choice.point);model:SetAttribute('SpawnPlayerDistance',choice.distance)
+ model:SetAttribute('SpawnStartDistance',choice.spawnDistance);model:SetAttribute('SpawnFloor',choice.room.level)
+ model:SetAttribute('SpawnCandidateCount',total);model:SetAttribute('DifficultyLevel',level)
+ local _,yaw,_=root.CFrame:ToOrientation()
+ table.insert(list,{model=model,root=root,speed=(template.speed+2*difficulty)*verificationSpeed*(level==1 and EASY_SPEED or 1),room=choice.room,visits={[choice.room.name]=1},
+  mode='Patrol',anger=0,difficulty=difficulty,spawnedAt=os.clock(),easy=level==1,level=level,calmUntil=os.clock()+math.max(CALM_MIN,CALM_BASE-(level-1)*CALM_STEP)+(level==1 and EASY_EXTRA_CALM or 0),calmNotice=CALM_NOTICE,points=nil,pointIndex=1,pauseUntil=os.clock()+.2,
+  lastPosition=choice.point,lastProgress=os.clock(),yaw=yaw})
+ roundState:SetAttribute('MonsterCount',#list)
+ return true
+end
 -- Gear shop weapons (GearShopServer): blast -> stun then flee far from players; hypnotize -> ignores players; kill -> gone for the level.
 do
  local old=ServerStorage:FindFirstChild('CreatureWeaponApi');if old then old:Destroy()end
  local weapon=Instance.new('BindableFunction');weapon.Name='CreatureWeaponApi';weapon.Parent=ServerStorage
  local function find(model)for _,list in pairs(active)do for _,s in list do if s.model==model then return s,list end end end end
  weapon.OnInvoke=function(action,model,a,b)
+  if action=='respawn'then -- the orb was sold: bring it back now unless the timer already did
+   if typeof(a)~='string' or slainPending[a]==nil then return false end
+   local level=slainPending[a];slainPending[a]=nil;return respawnSlain(a,level)
+  end
   if action=='skitters'then return skitter:Models()end
   if action=='skitterTrap'then return skitter:Kill(model,a)end
+  -- Close-up choices (CursedItemsServer.CloseUpChoices): 'dismiss' = a roster monster sleeps through the level
+  -- (model nil) or one hunter is removed; 'hunt' = the Lantern rises out of the sleeping pup and hunts only player `a`.
+  if action=='dismiss'then
+   local pick,from
+   for _,list in pairs(active)do for _,s in list do
+    if s.model.Parent and((model==nil and not s.hunt and not s.attack)or s.model==model)then pick,from=s,list end
+   end end
+   if not pick then return nil end
+   for i,x in ipairs(from)do if x==pick then table.remove(from,i);break end end
+   if model==nil then slainRound=rosterRound end -- it stays asleep: the roster does not refill this level
+   local name=pick.model.Name;pick.model:Destroy()
+   roundState:SetAttribute('MonsterCount',math.max(0,(roundState:GetAttribute('MonsterCount')or 1)-1))
+   return name
+  end
+  if action=='grab'then -- the pup's Lantern grabs the player who woke it as soon as it is out of the floor
+   local state=find(model)
+   if not state or typeof(a)~='Instance'or not a:IsA('Player')then return false end
+   state.target=a;state.pauseUntil=0;state.lastGrab=os.clock()
+   return Abilities:Catch(state,a,os.clock())==true
+  end
+  if action=='hunt'then
+   local p,opts=a,type(b)=='table'and b or{}
+   if typeof(p)~='Instance'or not p:IsA('Player')or typeof(opts.pos)~='Vector3'then return nil end
+   local template;for _,t in ipairs(templates)do if t.kind=='Lantern'then template=t end end
+   local room=roomAt(opts.pos)
+   if not room then -- woken outside the house (the Studio van test)
+    local entrance=mansion:GetAttribute('SpawnPosition');room=entrance and roomAt(entrance)
+    -- it still rises right where the pup was (it grabs at once), routing as if from the entrance room
+   end
+   if not template or not room then return nil end
+   local list=active.mission;if not list then list={};active.mission=list end
+   local rise,headStart=tonumber(opts.rise)or 1,tonumber(opts.headStart)or 1
+   local made,root=makeRig(template,p,opts.pos)
+   made.Name=template.name..'_Hunter_'..p.UserId
+   made:SetAttribute('CurrentRoom',room.name);made:SetAttribute('SpawnValidated',true);made:SetAttribute('Hunter',true)
+   made:SetAttribute('HuntUserId',p.UserId);made:SetAttribute('Mad',true)
+   local _,yaw=root.CFrame:ToOrientation();local now=os.clock()
+   local state={model=made,root=root,speed=template.speed,room=room,visits={[room.name]=1},mode='Patrol',anger=1,difficulty=0,
+    level=math.max(1,roundState:GetAttribute('Round')or 1),spawnedAt=now,calmUntil=0,calmNotice=CALM_NOTICE,points=nil,pointIndex=1,
+    pauseUntil=now+rise+headStart,lastGrab=now+rise+headStart-2.5,lastPosition=opts.pos,lastProgress=now,yaw=yaw,
+    hunt={player=p,speed=tonumber(opts.speed)or 30}}
+   table.insert(list,state);roundState:SetAttribute('MonsterCount',#list)
+   local final=root.CFrame
+   task.spawn(function() -- it rises out of the floor where the pup was
+    local t0=os.clock()
+    while os.clock()-t0<rise and root.Parent do local k=(os.clock()-t0)/rise;root.CFrame=final-Vector3.new(0,(1-k)^2*7,0);RunService.Heartbeat:Wait()end
+    if root.Parent then root.CFrame=final end
+   end)
+   return made
+  end
   if skitter:Owns(model)then return false end -- normal guns and blast never target the nuisance
   if action=='list'then local out={};for _,list in pairs(active)do for _,s in list do if s.model.Parent then table.insert(out,s.model)end end end;return out end
   local state,list=find(model);if not state then return false end
@@ -1207,9 +1521,19 @@ do
    return true
   elseif action=='hypnotize'then
    model:SetAttribute('HypnoUntil',now+(tonumber(a)or 20));state.target=nil;state.catching=nil;setMode(state,'Patrol');return true
+  elseif action=='devour'then -- the friend balloon ate it: gone for the whole level, no return timer (its orb never revives it)
+   for i,x in ipairs(list)do if x==state then table.remove(list,i);break end end
+   slainRound=rosterRound
+   model:Destroy();roundState:SetAttribute('MonsterCount',math.max(0,(roundState:GetAttribute('MonsterCount')or 1)-1));return true
   elseif action=='kill'then
    for i,x in ipairs(list)do if x==state then table.remove(list,i);break end end
    slainRound=rosterRound
+   local slainName,slainLevel=model.Name,roundState:GetAttribute('Round')
+   slainPending[slainName]=slainLevel
+   task.delay(RETURN_AFTER,function()
+    if slainPending[slainName]~=slainLevel then return end
+    slainPending[slainName]=nil;respawnSlain(slainName,slainLevel)
+   end)
    model:Destroy();roundState:SetAttribute('MonsterCount',math.max(0,(roundState:GetAttribute('MonsterCount')or 1)-1));return true
   end
   return false
@@ -1227,13 +1551,13 @@ adminApi.OnInvoke=function(action,owner,pos,index)
  if not room then return false,'Stand inside the map to spawn a monster.' end
  local list=active.mission;if not list then list={};active.mission=list end
  local level=math.max(1,roundState:GetAttribute('Round')or 1)
- local difficulty=1-math.exp(-math.max(0,level-2)/10)
+ local difficulty=1-math.exp(-math.max(0,level-2)/4) -- L3 .22, L4 .39, L5 .53 (was /10)
  local model,root=makeRig(template,owner,pos)
  model.Name=template.name..'_Admin_'..(#list+1)
  model:SetAttribute('CurrentRoom',room.name);model:SetAttribute('SpawnValidated',true);model:SetAttribute('SpawnPosition',pos);model:SetAttribute('AdminSpawned',true)
  local _,yaw,_=root.CFrame:ToOrientation()
  table.insert(list,{model=model,root=root,speed=(template.speed+2*difficulty)*verificationSpeed,room=room,visits={[room.name]=1},
-  mode='Patrol',anger=0,difficulty=difficulty,spawnedAt=os.clock(),calmUntil=os.clock()+5,calmNotice=CALM_NOTICE,points=nil,pointIndex=1,pauseUntil=os.clock()+.2,
+  mode='Patrol',anger=0,difficulty=difficulty,level=level,spawnedAt=os.clock(),calmUntil=os.clock()+5,calmNotice=CALM_NOTICE,points=nil,pointIndex=1,pauseUntil=os.clock()+.2,
   lastPosition=pos,lastProgress=os.clock(),yaw=yaw})
  roundState:SetAttribute('MonsterCount',#list)
  return true,model.Name

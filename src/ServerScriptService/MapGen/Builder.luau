@@ -39,6 +39,16 @@ function B.Build(plan,kit,parent)
    p.CanCollide=false
   end end
  end
+ -- Two-sided shells: a wall or doorway between rooms with different themes is built as two half-thickness skins,
+ -- each facing (and themed like) its own room, so colours and trim always match the room you stand in.
+ -- `cf` sits on the wall line; its local Z is the wall normal pointing to the +coordinate side.
+ local function sideOf(r,axis,c)
+  local centre=if axis=='x' then (r.z1+r.z2)/2 else (r.x1+r.x2)/2
+  return centre>c and 1 or -1
+ end
+ local function skinCF(cf,s) return cf*CFrame.new(0,0,s*.35)*(if s>0 then CFrame.Angles(0,math.pi,0) else CFrame.identity) end
+ -- Mansion repaints every wall one colour afterwards (ManorReferenceFinish), so it never needs two skins.
+ local function twoThemes(a,b) return plan.mapKind~='Mansion' and plan.mapKind~='Dungeon' and a and b and a.theme~=b.theme end
  for _,r in ipairs(plan.rooms) do
   local cf=CFrame.new((r.x1+r.x2)/2,r.level*16,(r.z1+r.z2)/2);local theme=R.Themes[r.theme]
   if r.type~='Stair' or r.level==0 then
@@ -121,6 +131,11 @@ function B.Build(plan,kit,parent)
      if glass then local barrier=glass:Clone();barrier.Name='WindowBarrier';barrier.Transparency=1;barrier.Size=Vector3.new(glass.Size.X,glass.Size.Y,1.4);barrier.CanCollide=true;barrier.CanQuery=true;barrier.Parent=mansion.Collision end
      local r=windowOwner
      table.insert(r.windowKeepouts,if l.axis=='x' then {x=mid,z=math.clamp(l.c,r.z1+1.5,r.z2-1.5),w=length*.75,d=3} else {x=math.clamp(l.c,r.x1+1.5,r.x2-1.5),z=mid,w=3,d=length*.75})
+    elseif #owners>=2 and twoThemes(owners[1],owners[2]) then
+     for _,o in ipairs({owners[1],owners[2]}) do
+      local m=clone('Wall',skinCF(cf,sideOf(o,l.axis,l.c)),mansion.Architecture,R.Themes[o.theme],length/4,16/14,.5);colliders(m,'Wall')
+     end
+     table.insert(plan.wallSegments,{cf=cf,length=length,room=owners[1].name})
     else
      local m=clone('Wall',cf,mansion.Architecture,R.Themes[owners[1].theme],length/4,16/14);colliders(m,'Wall')
      table.insert(plan.wallSegments,{cf=cf,length=length,room=owners[1].name})
@@ -129,11 +144,30 @@ function B.Build(plan,kit,parent)
   end
   for _,a in ipairs(l.cuts) do
    local v=(a.lo+a.hi)/2;local cf=if l.axis=='x' then CFrame.new(v,l.level*16,l.c) else CFrame.new(l.c,l.level*16,v)*CFrame.Angles(0,math.pi/2,0)
-   local theme=R.Themes[plan.rooms[1].theme]
+   -- The doorway takes the colours of the rooms it joins (it used to take the first room of the plan everywhere).
+   local ra,rb
+   if a.edge then for _,r in ipairs(plan.rooms) do if r.name==a.edge.a then ra=r elseif r.name==a.edge.b then rb=r end end end
+   if a.entrance then ra=plan.rooms[1] end
+   local theme=R.Themes[(ra or plan.rooms[1]).theme]
+   local split=twoThemes(ra,rb)
    local cap=(plan.mapKind=='Hotel' and U.Resolve(kit,'Wall',theme) or kit.Wall).Wallpaper:Clone();cap.Name='PortalUpperFrieze';local tuck=plan.mapKind=='Hotel' or plan.mapKind=='Mall' or plan.mapKind=='Hospital' or plan.mapKind=='School' or plan.mapKind=='Cruise';cap.Size=Vector3.new(a.hi-a.lo,tuck and 1.90 or 1.94,1.4);cap.CFrame=cf*CFrame.new(0,tuck and 14.99 or 14.97,0) --[[top 0.06 under the upstairs floor so it never shows through the floor seam]];cap.Color=theme.wall;cap.Material=theme.wallMaterial or Enum.Material.Plaster;cap.Parent=mansion.Architecture
    local collider=cap:Clone();collider.Transparency=1;collider.Parent=mansion.Collision;cap.CanCollide=false
+   if split then
+    -- frieze above the opening: one half-depth strip per side, each in its room's wall colour
+    for _,o in ipairs({ra,rb}) do
+     local t=R.Themes[o.theme];local half=cap:Clone();half.Size=Vector3.new(cap.Size.X,cap.Size.Y,.7)
+     half.CFrame=skinCF(cf,sideOf(o,l.axis,l.c))*CFrame.new(0,cap.CFrame.Position.Y-cf.Position.Y,0);half.Color=t.wall;half.Material=t.wallMaterial or Enum.Material.Plaster;half.Parent=mansion.Architecture
+    end
+    cap:Destroy()
+   end
    if a.edge and a.edge.kind=='open' or a.entrance then continue end
-   local m=clone('WallDoor',cf,mansion.Architecture,theme,R.DoorWidth/6);colliders(m,'DoorFrame')
+   if split then
+    for _,o in ipairs({ra,rb}) do
+     local m=clone('WallDoor',skinCF(cf,sideOf(o,l.axis,l.c)),mansion.Architecture,R.Themes[o.theme],R.DoorWidth/6,1,.5);colliders(m,'DoorFrame')
+    end
+   else
+    local m=clone('WallDoor',cf,mansion.Architecture,theme,R.DoorWidth/6);colliders(m,'DoorFrame')
+   end
    local threshold=clone('Floor',cf*CFrame.new(0,-.015,0),mansion.Architecture,theme,(a.hi-a.lo)/4,.2,.35)
    threshold.Name='DoorThreshold';A.Floor(plan,{name='DoorThreshold',type='Hall'},threshold);colliders(threshold,'DoorThreshold')
    if a.edge.boarded then
@@ -184,6 +218,8 @@ function B.Build(plan,kit,parent)
   end
  end end
  F.Build(plan,mansion,kit)
+ -- World features (laundry chutes, crawl hatches, wall safe, puzzle props; Furnisher.WorldFeatures): optional, never fails a build.
+ do local ok,err=pcall(F.WorldFeatures,plan,mansion,kit);if not ok then warn('[MapGen] world features skipped: '..tostring(err)) end end
  A.Decorate(plan,mansion)
  -- Diagonal walls across clear corners; validation below and V.Built/V.Paths judge them like any wall.
  require(script.Parent.AngledCorners).Apply(plan,mansion,kit)

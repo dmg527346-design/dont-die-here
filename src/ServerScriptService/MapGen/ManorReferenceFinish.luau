@@ -39,6 +39,10 @@ function M.Apply(mansion,plan)
    end
   end
  end
+ -- Doorway surrounds, window walls and the strip above every opening take the same colour as the repainted walls.
+ for _,x in ipairs(mansion.Architecture:GetDescendants())do
+  if x:IsA('BasePart')and(x.Name=='PortalUpperFrieze'or(x.Parent and(x.Parent.Name=='WallDoor'or x.Parent.Name=='WallWindow')and x:GetAttribute('Surface')=='wallpaper'))then x.Color=Color3.fromRGB(120,103,77) end
+ end
  -- A muted carpet route leads to the entry without adding obstacles.
  for _,r in ipairs(plan.rooms)do
   if r.type=='Hall' or r.type=='Foyer' then
@@ -100,7 +104,7 @@ function M.Apply(mansion,plan)
    if o and o.type=='Hall' then chandelier((o.x1+o.x2)/2,(o.z1+o.z2)/2);break end
   end
  else chandelier(-6,length-8);chandelier(-6,0) end
- sign(f,'VAN / EXIT',CFrame.new(entrance.x,11.5,entrance.z-.8),8)
+ -- No VAN / EXIT sign here: RecoveryModels' green VAN / RETURN marker already labels the way out (2026-10-22).
  for _,st in ipairs(stairs) do
   local at=frame(st)
   sign(f,'UPSTAIRS',at(5.28,12.4,-18)*CFrame.Angles(0,math.pi/2,0),6)

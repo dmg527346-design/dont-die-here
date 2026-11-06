@@ -49,6 +49,7 @@ function Module.Start(owner)
  local caption=Instance.new('TextLabel');caption.Name='Caption';caption.Position=UDim2.fromOffset(0,-23);caption.Size=UDim2.fromOffset(BAR_WIDTH,18);caption.BackgroundTransparency=1;caption.Font=Enum.Font.GothamMedium;caption.TextSize=11;caption.TextColor3=Color3.fromRGB(244,222,184);caption.TextXAlignment=Enum.TextXAlignment.Left;caption.Text='STAMINA';caption.Parent=back
  local runButton=Instance.new('TextButton');runButton.Name='LobbyRunAction';runButton.AnchorPoint=Vector2.new(1,1);runButton.BackgroundColor3=Color3.fromRGB(30,35,27);runButton.BackgroundTransparency=.35;runButton.AutoButtonColor=true;runButton.Font=Enum.Font.GothamMedium;runButton.TextSize=12;runButton.TextColor3=Color3.fromRGB(244,222,184);runButton.Text='RUN';runButton.Visible=false;runButton.Parent=gui;Instance.new('UICorner',runButton).CornerRadius=UDim.new(0,16)
  local stroke=Instance.new('UIStroke');stroke.Color=Color3.fromRGB(224,146,57);stroke.Transparency=.55;stroke.Thickness=1;stroke.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;stroke.Parent=runButton
+ if game:GetService('GuiService'):IsTenFootInterface()then local tv=Instance.new('UIScale');tv.Name='TvScale';tv.Scale=1.4;tv.Parent=back end -- consoles: 40% bigger on a TV
  local function layout()
   local camera=workspace.CurrentCamera
   local small=camera and camera.ViewportSize.Y<SMALL_VIEW_HEIGHT
@@ -83,7 +84,7 @@ function Module.Start(owner)
   local character=player.Character
   local humanoid=character and character:FindFirstChildOfClass('Humanoid')
   if not humanoid or humanoid.Health<=0 then reset();gui.Enabled=false;return end
-  gui.Enabled=true
+  gui.Enabled=player:GetAttribute('InspectActive')~=true -- the lobby inspect camera (InspectCamera) hides the HUD
   local max=maxStamina();stamina=math.min(stamina,max)
   local moving=humanoid.MoveDirection.Magnitude>.1
   local blocked=player:GetAttribute('SprintBlocked') or player:GetAttribute('Crouching')

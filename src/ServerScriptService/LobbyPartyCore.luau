@@ -1,5 +1,5 @@
 local M={}
-M.DefaultPreferences={MasterVolume=.65,EffectsVolume=.7,MenuMusicVolume=.25,Jumpscares=true,FlashingLights=true,CameraMotion=true,SpitEffects=true,VoiceEffects=true}
+M.DefaultPreferences={MasterVolume=.65,EffectsVolume=.7,MenuMusicVolume=.25,Jumpscares=true,FlashingLights=true,CameraMotion=true,SpitEffects=true,VoiceEffects=true,MobileHighQuality=true}
 function M.Preferences(input)
  local out=table.clone(M.DefaultPreferences)
  if type(input)=='table' then for key,default in pairs(out)do

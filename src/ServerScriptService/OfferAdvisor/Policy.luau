@@ -1,8 +1,9 @@
 -- Pure session policy: no persistence, purchases, or client-derived eligibility.
 local M={}
-M.FirstDelay=90
-M.Cooldown=240
-M.PerLevel=3
+-- 2026-10-24 owner: a little more often (was 90 / 240 / 3).
+M.FirstDelay=60
+M.Cooldown=150
+M.PerLevel=4
 M.Lifetime=12
 M.AnswerGrace=1
 local choices={yes=true,no=true,close=true,timeout=true}
@@ -31,10 +32,13 @@ function M.Select(s,c)
  end
  local function revival(reason)
   if c.owned.free_revive==false then add('free_revive',reason)end
-  if (c.reviveTokens or 0)==0 and not c.freeReviveAvailable then add('revive_token',reason)end
+  -- 2026-10-24 owner: offer the 3-pack (not the single token), also when only 1 token is left.
+  if (c.reviveTokens or 0)<=1 and not c.freeReviveAvailable then add('revive_pack_3',reason)end
  end
- if s.deathsLevel>=2 or s.deathsRun>=3 then revival('second_chance')end
+ if s.deathsLevel>=1 or s.deathsRun>=2 then revival('second_chance')end -- was 2 / 3 deaths (2026-10-24: more often)
  -- Solo play never recommends a party prank or a social cosmetic.
+ -- New players see no offers until they understand the game: after their first death or first completed run.
+ if s.deathsRun==0 and not c.veteran then return nil end
  if #candidates==0 and c.solo then revival('solo_backup')end
  if #candidates==0 and not c.solo and c.social then
   if (c.jumpscareCharges or 0)==0 then add('jumpscare_all','friends_together')end

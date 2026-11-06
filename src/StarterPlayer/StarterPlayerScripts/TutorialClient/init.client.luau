@@ -10,8 +10,18 @@ local RS=game:GetService('ReplicatedStorage')
 local Tween=game:GetService('TweenService')
 local PathService=game:GetService('PathfindingService')
 local InputHints=require(RS:WaitForChild('InputHints'))
+local Guided=require(script:WaitForChild('GuidedTutorial'));Guided.Start()
+-- The shop chapter (team boost, then Movement Speed) is off (owner 2026-10-27): after the tutorial players just play.
 local p=Players.LocalPlayer
 local event=RS:WaitForChild('LobbyEvent')
+-- Analytics: the side menus set these attributes on the client only, so report the first open to PlayerMetricsServer.
+task.spawn(function()
+ local report=RS:WaitForChild('TutorialStepEvent',30);if not report then return end
+ for _,name in {'QuestLogOpen','VanRewardsOpen','VanShopOpen'}do
+  local sent=false
+  p:GetAttributeChangedSignal(name):Connect(function()if not sent and p:GetAttribute(name)==true then sent=true;report:FireServer('open:'..name)end end)
+ end
+end)
 
 local CARD_W,CARD_H=300,92
 local CARD_BOTTOM=96 -- bottom centre, above the stamina bar and Roblox's own bottom bar
@@ -35,6 +45,13 @@ local function cartReady()
  local cartValue=attr('CartValue')or 0
  return attr('Phase')=='Searching' and attr('SaleEnds')==nil and cartValue>0 and (attr('Sold')or 0)+cartValue>=(attr('Quota')or math.huge)
 end
+-- First game only: a quarter of the quota (about two items) is enough for a first sale, so new players see the van
+-- pay out early instead of wandering until the cart is full.
+local FIRST_SALE_SHARE=.25
+local function firstSaleReady()
+ local cartValue=attr('CartValue')or 0
+ return attr('Phase')=='Searching' and attr('SaleEnds')==nil and not sold() and cartValue>=(attr('Quota')or math.huge)*FIRST_SALE_SHARE
+end
 local function monsterDistance()
  local r=root();local folder=workspace:FindFirstChild('RoamingCreatures')
  if not r or not folder then return math.huge end
@@ -45,14 +62,35 @@ end
 
 -- Intro steps run once, in order; each ends when done() or after its timer. Then the card is silent until the cart is ready.
 local moved,movedFrom=0,nil
+-- Flashlight step: F / gamepad B (FlashlightController's keys) or the touch LIGHT button.
+local lightUsed=false
+game:GetService('UserInputService').InputBegan:Connect(function(input)
+ if input.KeyCode==Enum.KeyCode.F or input.KeyCode==Enum.KeyCode.ButtonB then lightUsed=true end
+end)
+task.spawn(function()
+ local b;repeat b=p.PlayerGui:FindFirstChild('LightAction',true);task.wait(1)until b
+ if b:IsA('GuiButton')then b.Activated:Connect(function()lightUsed=true end)end
+end)
 local INTRO={
- {title='GRAB THE CART',kb='The cart is behind the van. Hold left click on it to grab it.',pad='The cart is behind the van. Hold R2 on it to grab it.',touch='The cart is behind the van. Aim at it and tap GRAB.',cart=true,timer=45,done=function()return cartMine()or(attr('CartValue')or 0)>0 end},
- {title='PUSH IT',kb='Walk while you hold left click to push the cart. Let go to leave it.',pad='Walk while you hold R2 to push the cart. Let go to leave it.',touch='Walk to push the cart. Tap DROP to leave it.',timer=20,minimum=1.5,done=function()return moved>=10 end},
- {title='FILL THE CART',kb='Look inside the rooms: loot hides on shelves, in drawers and behind doors. Bring it back to the cart until it reaches the quota.',timer=12},
+ {title='GRAB THE CART',kb='The cart is in front of you, highlighted. Hold left click on it to grab it.',pad='The cart is in front of you, highlighted. Hold RT on it to grab it.',touch='The cart is in front of you, highlighted. Aim at it and tap GRAB.',cart=true,timer=45,done=function()return cartMine()or(attr('CartValue')or 0)>0 end},
+ {title='PUSH IT',kb='Walk while you hold left click to push the cart. Let go to leave it.',pad='Walk while you hold RT to push the cart. Let go to leave it.',touch='Walk to push the cart. Tap DROP to leave it.',timer=20,minimum=1.5,done=function()return moved>=10 end},
+ {title='CROUCH',kb='Press C or Ctrl to crouch. Press it again to stand up.',pad='Press down on the right joystick to crouch. Press it again to stand up.',touch='Tap CROUCH to crouch. Tap STAND to get up.',timer=20,minimum=1.5,done=function()return p:GetAttribute('Crouching')==true end},
+ {title='HIDE UNDER TABLES',kb='Crouch under a table to hide. Monsters cannot see you while you are tucked under it.',timer=5},
+ {title='CLOSETS',kb='Closets hide you too. Look at one and press E to step inside.',pad='Closets hide you too. Look at one and press X to step inside.',touch='Closets hide you too. Aim at one and tap HIDE to step inside.',timer=5},
+ {title='FILL THE CART',kb='Look inside the rooms: loot hides on shelves, in drawers and behind doors. Hold left click to carry it to the cart.',pad='Look inside the rooms: loot hides on shelves, in drawers and behind doors. Hold RT to carry it to the cart.',touch='Look inside the rooms: loot hides on shelves, in drawers and behind doors. Aim at it and tap GRAB to carry it to the cart.',timer=12},
 }
 local READY={title='CART IS READY',kb='The cart has enough to meet the quota. Go back and grab it.'}
-local TO_VAN={title='TO THE VAN',kb='Push the cart into the van. Follow the dots, then let go of left click to sell.',pad='Push the cart into the van. Follow the dots, then let go of R2 to sell.',touch='Push the cart into the van. Follow the dots, then tap DROP to sell.'}
+local CASH_IN={title='CASH IN',kb='The van buys loot any time. Grab the cart and push it into the van to sell what you have.'}
+local TO_VAN={title='TO THE VAN',kb='Push the cart into the van. Follow the dots, then let go of left click to sell.',pad='Push the cart into the van. Follow the dots, then let go of RT to sell.',touch='Push the cart into the van. Follow the dots, then tap DROP to sell.'}
 local SOLD={title='SOLD!',kb='Nice work. Everyone still alive climbs into the van to leave.'}
+-- A first sale below the quota: show progress so nobody thinks the level is done.
+local SOLD_PART={title='SOLD',kb=''}
+local function soldStep()
+ local s,q=attr('Sold')or 0,attr('Quota')or 0
+ if s>=q then return SOLD end
+ SOLD_PART.title='SOLD $'..s..' / $'..q;SOLD_PART.kb='Keep collecting! Bring more loot to the van until you reach $'..q..'.'
+ return SOLD_PART
+end
 
 local gui,card,titleLabel,bodyLabel,banner
 local function build()
@@ -108,26 +146,36 @@ local cartGlow=Instance.new('Highlight');cartGlow.Name='CartGuide';cartGlow.Fill
 local vanAnchor=Instance.new('Part');vanAnchor.Name='VanGuideBox';vanAnchor.Anchored=true;vanAnchor.CanCollide=false;vanAnchor.CanQuery=false;vanAnchor.CanTouch=false;vanAnchor.CastShadow=false;vanAnchor.Transparency=1
 -- Fill plus 12 edge bars, all AlwaysOnTop so the van shows through walls (SelectionBox and Highlight do not here).
 -- Note: Studio's screen_capture leaves these adornments out; judge them in the play window.
-local vanFill=Instance.new('BoxHandleAdornment');vanFill.Name='VanGuideFill';vanFill.AlwaysOnTop=true;vanFill.ZIndex=1;vanFill.Color3=Color3.new(1,1,1);vanFill.Adornee=vanAnchor;vanFill.Visible=false;vanFill.Parent=gui
-local vanEdges={}
-for i=1,12 do local e=vanFill:Clone();e.Name='VanGuideEdge';e.ZIndex=2;e.Parent=gui;vanEdges[i]=e end
-local vanGlow={} -- set(visible, fillTransparency, edgeTransparency, edgeThickness)
-function vanGlow.set(visible,fillT,edgeT,thick)
- -- adornments live under the camera (they draw from there in every Studio and client build)
- local cam=workspace.CurrentCamera
- if cam and vanFill.Parent~=cam then vanFill.Parent=cam;for _,e in vanEdges do e.Parent=cam end end
- vanFill.Visible=visible;for _,e in vanEdges do e.Visible=visible end
- if not visible then return end
- local s=vanAnchor.Size;vanFill.Size=s;vanFill.Transparency=fillT
+local VAN_GREEN=Color3.fromRGB(110,240,150)
+-- The van stays visible: an almost clear green tint, a glowing green wireframe, and a second wireframe that keeps
+-- swelling out of the van and fading (a sonar ripple), so it reads as "bring it here" (owner, 2026-10-22: the white box hid the van).
+local vanFill=Instance.new('BoxHandleAdornment');vanFill.Name='VanGuideFill';vanFill.AlwaysOnTop=true;vanFill.ZIndex=1;vanFill.Color3=VAN_GREEN;vanFill.Adornee=vanAnchor;vanFill.Visible=false;vanFill.Parent=gui
+local vanEdges,vanRipple={},{}
+for i=1,12 do local e=vanFill:Clone();e.Name='VanGuideEdge';e.ZIndex=3;e.Parent=gui;vanEdges[i]=e end
+for i=1,12 do local e=vanFill:Clone();e.Name='VanGuideRipple';e.ZIndex=2;e.Parent=gui;vanRipple[i]=e end
+local function placeEdges(list,s,thick,transparency)
  local i=0
  for axis=1,3 do -- 4 edges along each axis
   for _,a in{-1,1}do for _,b in{-1,1}do
-   i+=1;local e=vanEdges[i];e.Transparency=edgeT
+   i+=1;local e=list[i];e.Transparency=transparency
    if axis==1 then e.Size=Vector3.new(s.X+thick,thick,thick);e.CFrame=CFrame.new(0,a*s.Y/2,b*s.Z/2)
    elseif axis==2 then e.Size=Vector3.new(thick,s.Y+thick,thick);e.CFrame=CFrame.new(a*s.X/2,0,b*s.Z/2)
    else e.Size=Vector3.new(thick,thick,s.Z+thick);e.CFrame=CFrame.new(a*s.X/2,b*s.Y/2,0)end
   end end
  end
+end
+local vanGlow={} -- set(visible, fillTransparency, edgeTransparency, edgeThickness)
+function vanGlow.set(visible,fillT,edgeT,thick)
+ -- adornments live under the camera (they draw from there in every Studio and client build)
+ local cam=workspace.CurrentCamera
+ if cam and vanFill.Parent~=cam then vanFill.Parent=cam;for _,e in vanEdges do e.Parent=cam end;for _,e in vanRipple do e.Parent=cam end end
+ vanFill.Visible=visible;for _,e in vanEdges do e.Visible=visible end;for _,e in vanRipple do e.Visible=visible end
+ if not visible then return end
+ local s=vanAnchor.Size;vanFill.Size=s;vanFill.Transparency=math.max(fillT,.9)
+ local pulse=.5+.5*math.sin(os.clock()*4)
+ placeEdges(vanEdges,s,thick*(1.4+.4*pulse),math.clamp(edgeT*.8+.1*(1-pulse),0,1))
+ local wave=(os.clock()/1.3)%1 -- 0 -> 1 every 1.3 s
+ placeEdges(vanRipple,s*(1+wave*.35),thick*.9,math.clamp(edgeT+(1-edgeT)*wave,0,1))
 end
 local boxOf,boxCount=nil,0
 local function fitVanBox(van)
@@ -146,6 +194,34 @@ local function fitVanBox(van)
  if #parts==0 then return end
  vanAnchor.Size=hi-lo+Vector3.new(.2,.2,.2);vanAnchor.CFrame=base*CFrame.new((lo+hi)/2)
  vanAnchor.Parent=workspace.CurrentCamera
+end
+-- Cart Beacon gear (GearShopServer fits it and sets the cart's BeaconFitted): a cyan CART tag with the distance, drawn
+-- through walls for every player while it is fitted. Hidden up close and for whoever is pushing the cart.
+do
+ local BEACON_TAG_NEAR=14 -- studs: closer than this the cart is plainly in view
+ local tag=Instance.new('BillboardGui');tag.Name='CartBeaconTag';tag.AlwaysOnTop=true;tag.LightInfluence=0;tag.ResetOnSpawn=false
+ tag.Size=UDim2.fromOffset(110,40);tag.StudsOffsetWorldSpace=Vector3.new(0,4.2,0);tag.Enabled=false
+ local icon=Instance.new('Frame');icon.Name='Diamond';icon.AnchorPoint=Vector2.new(.5,0);icon.Position=UDim2.fromScale(.5,0);icon.Size=UDim2.fromOffset(13,13)
+ icon.Rotation=45;icon.BackgroundColor3=Color3.fromRGB(120,230,255);icon.BorderSizePixel=0;icon.Parent=tag
+ local iconStroke=Instance.new('UIStroke');iconStroke.Thickness=1.5;iconStroke.Color=Color3.fromRGB(20,40,50);iconStroke.Parent=icon
+ local text=Instance.new('TextLabel');text.Name='Distance';text.Position=UDim2.fromOffset(0,16);text.Size=UDim2.new(1,0,0,24);text.BackgroundTransparency=1
+ text.Font=Enum.Font.FredokaOne;text.TextScaled=true;text.TextColor3=Color3.fromRGB(205,245,255);text.Text='CART';text.Parent=tag
+ local stroke=Instance.new('UIStroke');stroke.Thickness=1.5;stroke.Transparency=.3;stroke.Parent=text
+ tag.Parent=p:WaitForChild('PlayerGui')
+ task.spawn(function()
+  while true do
+   local cart=cartModel();local r=root()
+   local on=cart~=nil and cart.PrimaryPart~=nil and cart:GetAttribute('BeaconFitted')==true and r~=nil and not cartMine()
+   local d=on and(cart.PrimaryPart.Position-r.Position).Magnitude or 0
+   on=on and d>BEACON_TAG_NEAR
+   tag.Adornee=on and cart.PrimaryPart or nil;tag.Enabled=on
+   if on then
+    text.Text=('CART  %dm'):format(math.floor(d*.28+.5))
+    icon.BackgroundTransparency=.25*(.5+.5*math.sin(os.clock()*3)) -- the same slow pulse as the lamp
+   end
+   task.wait(.2)
+  end
+ end)
 end
 local dotFolder=Instance.new('Folder');dotFolder.Name='CartGuideDots'
 local dots={}
@@ -202,10 +278,15 @@ local function preview()
  local v=game:GetService('RunService'):IsStudio()and RS:GetAttribute('TutorialPreview')
  return(v=='first'or v=='veteran')and v or nil
 end
-local finished=false
+-- Owner (live servers and Studio): replay the first-game tutorial on level 1 of every save, to see what a new player
+-- sees. Nothing is saved for a replay.
+local function ownerReplay()
+ return p:GetAttribute('AdminOwner')==true and(attr('Round')or 1)<=1
+end
+local finished,replaying=false,false
 local function finish()
  if finished then return end;finished=true
- if preview()then return end
+ if preview()or replaying then return end
  p:SetAttribute('TutorialDone',true) -- local echo; the server publishes the saved value
  event:FireServer(900000000+math.random(1,99999),'tutorialDone',{})
 end
@@ -216,10 +297,13 @@ skipButton.Activated:Connect(function()finish();stage=nil;card.Visible=false end
 
 local function show(step)
  if step~=shownStep then
-  shownStep=step;titleLabel.Text=step.title
+  shownStep=step
   card.BackgroundTransparency=.6;Tween:Create(card,TweenInfo.new(.25),{BackgroundTransparency=.2}):Play()
  end
- bodyLabel.Text=step[InputHints.Get()]or step.kb
+ titleLabel.Text=step.title
+ local device=InputHints.Get()
+ local body=step[device]or step.kb
+ bodyLabel.Text=device=='pad'and InputHints.PadText(body)or body -- RT on Xbox, R2 on PlayStation
 end
 
 local wasActive,bannerWasShown,lastGoalKind=false,false,nil
@@ -229,9 +313,11 @@ while true do
  local h=p.Character and p.Character:FindFirstChildOfClass('Humanoid')
  local alive=active and h~=nil and h.Health>0 and p:GetAttribute('RoundDead')~=true
  if active and not wasActive then
-  moved,movedFrom,shownStep=0,nil,nil
-  local firstTime=preview()=='first'or not preview()and p:GetAttribute('TutorialDone')==false
-  if not finished and firstTime then enter(1)else stage=nil end
+  moved,movedFrom,shownStep,lightUsed=0,nil,nil,false
+  replaying=false -- GuidedTutorial owns the new first-game flow.
+  local firstTime=false -- First-game steps are handled by this owner's GuidedTutorial child.
+  if replaying then finished=false end
+  if not finished and(firstTime or replaying)then enter(1)else stage=nil end
  elseif not active and wasActive then stage=nil end
  wasActive=active
 
@@ -253,14 +339,14 @@ while true do
   end
   step=s;wantCart=s~=nil and s.cart==true
  end
- if stage=='wait'and cartReady()then
-  if cartHeld()then step,wantVanPath=TO_VAN,true else step,wantCart=READY,true end
+ if stage=='wait'and(cartReady()or firstSaleReady())then
+  if cartHeld()then step,wantVanPath=TO_VAN,true else step,wantCart=cartReady()and READY or CASH_IN,true end
  elseif stage=='sold'then
-  if elapsed<7 then step=SOLD else stage=nil end
+  if elapsed<7 then step=soldStep()else stage=nil end
  end
  card.Visible=alive and step~=nil and not p.PlayerGui:FindFirstChild('RoundRecap') -- the level-cleared screen owns the moment
  if step then show(step)end
- local firstGame=stage~=nil
+ local firstGame=stage~=nil or Guided.IsActive()
 
  local fade=monsterDistance()<MONSTER_NEAR and .4 or 0
  local ready=active and cartReady()
@@ -271,13 +357,17 @@ while true do
  banner.Visible=showBanner;bannerWasShown=showBanner
 
  cartGlow.Adornee=alive and wantCart and cart or nil;cartGlow.Enabled=cartGlow.Adornee~=nil
- cartGlow.FillTransparency=math.min(1,.9+fade);cartGlow.OutlineTransparency=math.min(1,.45+fade)
+ -- Owner 2026-10-29: hard to see on phones (small screen, thin outline line). Phones: a solid outline and a soft white
+ -- fill that pulses so the whole cart lights up; other devices: a stronger outline too. Still fades near a monster.
+ local touchCart=InputHints.Get()=='touch';local pulse=(math.sin(os.clock()*4)+1)/2
+ cartGlow.FillTransparency=math.min(1,(touchCart and .6+.2*pulse or .82)+fade);cartGlow.OutlineTransparency=math.min(1,(touchCart and 0 or .2)+fade)
 
  local van=vanModel();local r=root();local floor=van and van.PrimaryPart
  local goal=floor and(floor.CFrame*SALE_SPOT).Position
  local vanDist=(goal and r)and(goal-r.Position).Magnitude or 0
  local near=math.clamp((40-vanDist)/25,0,1) -- fades away as you arrive
- if alive and floor and(wantVanPath or wantVanMark)then
+ local guidedVan=Guided.GoalIsVan()
+ if alive and floor and(wantVanPath or wantVanMark or guidedVan)then
   fitVanBox(van)
   local thick=math.clamp(vanDist*.006,.15,1.2) -- edges stay a couple of pixels wide at any distance
   if wantVanMark then vanGlow.set(true,math.clamp(.55+near*.4+fade,0,1),math.clamp(near*.8+fade,0,1),thick)

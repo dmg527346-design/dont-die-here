@@ -46,7 +46,7 @@ gui.Parent=player:WaitForChild('PlayerGui')
 local PHONE_UI_SCALE=.65
 local root=Instance.new('Frame');root.Name='Root';root.BackgroundTransparency=1;root.Size=UDim2.fromScale(1,1);root.ZIndex=1;root.Parent=gui
 local rootScale=Instance.new('UIScale');rootScale.Parent=root
-local function phoneScale()local v=gui.AbsoluteSize;return(game:GetService('UserInputService').TouchEnabled and v.Y<500)and PHONE_UI_SCALE or 1 end
+local function phoneScale()local v=gui.AbsoluteSize;return(InputHints.IsMobile()and v.Y<500)and PHONE_UI_SCALE or 1 end
 local backdrop=UI.backdrop(gui,.6)
 local function label(class,name,parent,size,face)
     local x=Instance.new(class);x.Name=name;x.BackgroundTransparency=1

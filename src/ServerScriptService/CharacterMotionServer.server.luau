@@ -2,8 +2,10 @@
 local Players=game:GetService('Players')
 local event=game.ReplicatedStorage:WaitForChild('CharacterLook')
 local states={}
+local ready={} -- clients whose CharacterMotionClient is listening (joiners are not, and Roblox drops their queue)
 local function finite(n) return type(n)=='number' and n==n and math.abs(n)<math.huge end
 event.OnServerEvent:Connect(function(p,yaw,pitch,seq,targetPoint)
+    if yaw=='ready' then ready[p]=true;return end
     if not finite(yaw) or not finite(pitch) or not finite(seq) or seq%1~=0 or seq<0 or seq>9007199254740991 then return end
     if math.abs(yaw)>1.3 or math.abs(pitch)>1.2 then return end
     local now=os.clock();local previous=states[p]
@@ -15,9 +17,10 @@ event.OnServerEvent:Connect(function(p,yaw,pitch,seq,targetPoint)
     if not finite(targetPoint.X) or not finite(targetPoint.Y) or not finite(targetPoint.Z) then return end
     if (targetPoint-head.Position).Magnitude>500 or (targetPoint-head.Position).Magnitude<.1 then return end
     states[p]={time=now,seq=seq}
-    event:FireAllClients(p,yaw,pitch,workspace:GetServerTimeNow(),targetPoint)
+    local stamp=workspace:GetServerTimeNow()
+    for _,o in ipairs(Players:GetPlayers()) do if ready[o] then event:FireClient(o,p,yaw,pitch,stamp,targetPoint) end end
 end)
-Players.PlayerRemoving:Connect(function(p) states[p]=nil end)
+Players.PlayerRemoving:Connect(function(p) states[p]=nil;ready[p]=nil end)
 
 
 -- The existing character motion owner chooses occasional shared eye-contact targets.

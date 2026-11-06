@@ -1,4 +1,23 @@
 local missionPlayer=game:GetService('Players').LocalPlayer
+-- Preload every monster's meshes and sounds as soon as the client starts (2026-10-22): the first monster to appear in a
+-- server used to freeze the game for 60-280 ms while its 12-49 meshes and its sounds loaded mid-chase.
+task.spawn(function()
+ local RS=game:GetService('ReplicatedStorage')
+ local list={}
+ local portraits=RS:WaitForChild('MasteryPortraits',30)
+ if portraits then for _,m in portraits:GetChildren()do table.insert(list,m)end end
+ local catalog=RS:FindFirstChild('GameplaySoundCatalog')
+ local ok,C=pcall(require,catalog)
+ if ok and type(C)=='table'then
+  for key,def in C do
+   if type(key)=='string'and(key:find('Monster')or key:match('^Crawler')or key:match('^Wraith')or key:match('^Bellhop')or key:match('^Lantern')or key:match('^Neon'))and type(def)=='table'then
+    local ids={def.id};for _,entry in type(def.pool)=='table'and def.pool or {}do if type(entry)=='table'then table.insert(ids,entry.id)end end
+    for _,id in ids do if type(id)=='string'then local s=Instance.new('Sound');s.SoundId=id;table.insert(list,s)end end
+   end
+  end
+ end
+ pcall(function()game:GetService('ContentProvider'):PreloadAsync(list)end)
+end)
 while missionPlayer:GetAttribute('MissionActive')~=true do missionPlayer:GetAttributeChangedSignal('MissionActive'):Wait()end
 -- Local pose animation for the custom Motor6D mesh rig. The server owns movement.
 local RunService=game:GetService('RunService')
@@ -7,8 +26,9 @@ local mansion=Workspace:WaitForChild('Mansion',math.huge)
 while mansion:GetAttribute('Ready')~=true or mansion:GetAttribute('RuntimeReady')~=true do mansion:GetAttributeChangedSignal('RuntimeReady'):Wait() end
 local folder=Workspace:WaitForChild('RoamingCreatures')
 local rigs={}
+local function introStage(parent)return parent~=nil and parent.Name=='MonsterIntroStage' and parent.Parent==Workspace end
 local function gather(model)
-    if model.Parent~=folder then return end
+    if model.Parent~=folder and not introStage(model.Parent) then return end
     local motors={}
     for _,v in ipairs(model:GetDescendants()) do
         if v:IsA('Motor6D') then motors[v.Name]=v end
@@ -20,7 +40,8 @@ local function gather(model)
     rigs[model]={baseTorsoC0=previous and previous.baseTorsoC0,visualRoot=previous and previous.visualRoot,motors=motors,legs=legs,seed=model:GetAttribute('PhaseSeed') or 0,
         kind=model:GetAttribute('CreatureKind'),bh=previous and previous.bh,lw=previous and previous.lw,
         phase=0,speed=0,lookYaw=0,lookPitch=0,nextLook=0,targetYaw=0,targetPitch=0,
-        frenzy=previous and previous.frenzy or 0,nextGlitch=0,shards=nil,wisps=nil,veil=nil,whiteMist=nil,whiteSparks=nil}
+        frenzy=previous and previous.frenzy or 0,nextGlitch=0,shards=nil,wisps=nil,veil=nil,whiteMist=nil,whiteSparks=nil,
+        clips=previous and previous.clips,toy=previous and previous.toy}
 end
 folder.ChildAdded:Connect(function(child)
     if child:IsA('Model') then
@@ -41,6 +62,16 @@ for _,child in ipairs(folder:GetChildren()) do
         end)
     end
 end
+-- MonsterIntroClient's local stage (2026-10-27): its display monsters (rigged by CreatureRoamServer.makeRig) move with
+-- this same procedural animation, driven by the same attributes (Walking, AIState, MoveSpeed, AttackPose).
+local function watchStage(stage)
+    if not stage:IsA('Folder') or not introStage(stage) then return end
+    stage.ChildAdded:Connect(function(child) if child:IsA('Model') then gather(child) end end)
+    stage.ChildRemoved:Connect(function(child) rigs[child]=nil end)
+    for _,child in ipairs(stage:GetChildren()) do if child:IsA('Model') then gather(child) end end
+end
+Workspace.ChildAdded:Connect(watchStage)
+for _,child in ipairs(Workspace:GetChildren()) do if child.Name=='MonsterIntroStage' then watchStage(child) end end
 local function pose(m,cframe)
     if m then m.Transform=cframe end
 end
@@ -402,11 +433,167 @@ local function animateBellhop(model,rig,m,dt,now,frenzy,walking,root,camDistance
     pose(m.CoatLeftJoint,CFrame.Angles(-trail*.5+math.min(.22,math.max(0,b.thighLeft or 0)*.16)+flutter,0,-(.04+speed*.005)-flutter*.6))
     pose(m.CoatRightJoint,CFrame.Angles(-trail*.5+math.min(.22,math.max(0,b.thighRight or 0)*.16)-flutter,0,(.04+speed*.005)+flutter*.6))
 end
+-- Lonely Mittens and the Wind-Up Dancer (Monsters build 2026-10-27): rbxanim clips through the model's own Animator once
+-- their published ids sit on the template (AnimIdle, AnimWalk, AnimChase, AnimSignature, Anim<AttackPose>); until then a
+-- procedural pose. What a biped clip can't own stays procedural either way: the Dancer's key, tutu and raised leg, and
+-- the Mittens' scarf tail.
+local CLIP_ATTRS={'AnimIdle','AnimWalk','AnimChase','AnimSignature','AnimReach','AnimWave','AnimHug','AnimFlinch','AnimCurtsy','AnimTwirl'}
+local LOOPED={AnimIdle=true,AnimWalk=true,AnimChase=true,AnimSignature=true}
+local function clipsFor(model,rig)
+    if rig.clips~=nil then return rig.clips end
+    rig.clips=false
+    local ac=model:FindFirstChildOfClass('AnimationController');local animator=ac and ac:FindFirstChildOfClass('Animator')
+    if not animator then return false end
+    local list={}
+    for _,attr in CLIP_ATTRS do
+        local id=model:GetAttribute(attr)
+        if type(id)=='string' and id:match('%d') then
+            local a=Instance.new('Animation');a.AnimationId=id
+            local ok,track=pcall(animator.LoadAnimation,animator,a)
+            if ok and track then track.Looped=LOOPED[attr]==true;list[attr]=track end
+        end
+    end
+    if next(list) then rig.clips=list end
+    return rig.clips
+end
+local function playClip(rig,want,speed)
+    for attr,track in rig.clips do
+        if attr==want then if not track.IsPlaying then track:Play(.2) end;track:AdjustSpeed(speed or 1)
+        elseif track.IsPlaying then track:Stop(.2) end
+    end
+end
+local function animateToy(model,rig,m,dt,now,frenzy,walking,root,camDistance)
+    if camDistance>180 then return end
+    local b=rig.toy
+    if not b then b={key=0,keyRate=0,scarf=newPendulum()};rig.toy=b end
+    local attack=model:GetAttribute('AttackPose')
+    local dance=model:GetAttribute('DanceState')
+    local signature=(rig.kind=='Dancer' and dance=='Look') or (rig.kind=='Mittens' and attack=='Lead')
+    local clips=clipsFor(model,rig)
+    if clips then
+        local want=attack and attack~='Lead' and clips['Anim'..attack] and 'Anim'..attack
+            or signature and clips.AnimSignature and 'AnimSignature'
+            or walking and (frenzy>.5 and clips.AnimChase and 'AnimChase' or clips.AnimWalk and 'AnimWalk') or 'AnimIdle'
+        if clips[want] then playClip(rig,want,(want=='AnimWalk' or want=='AnimChase') and math.clamp((model:GetAttribute('MoveSpeed') or 10)/10,.6,2.2) or 1) end
+    else
+        local p=rig.phase+rig.seed;local move=rig.speed
+        local reach=(attack=='Reach' or attack=='Curtsy') and 1 or 0
+        if rig.kind=='Mittens' then
+            -- A shuffling waddle; the head droops and tilts, lonely; mittens swing late; reach = both arms out.
+            local flinch=attack=='Flinch' and 1 or 0
+            pose(m.TorsoJoint,CFrame.new(0,math.abs(math.sin(p))*.12*move,0)*CFrame.Angles(.05+.22*frenzy-.25*flinch,math.sin(p*.5)*.05*move,math.sin(p)*.07*move))
+            pose(m.Neck,CFrame.Angles(.12-.1*frenzy+math.sin(now*.7+rig.seed)*.04,math.sin(now*.45+rig.seed)*.3*(1-frenzy),.22*math.sin(now*.6+rig.seed)))
+            for _,s in {'Left','Right'}do
+                local k=s=='Left' and 1 or -1
+                local swing=math.sin(p+(k>0 and 0 or math.pi)-.6)*.35*move
+                local wave=(s=='Left' and attack=='Wave') and 1 or 0
+                local lead=(s=='Right' and attack=='Lead') and 1 or 0
+                local hug=attack=='Hug' and 1 or 0
+                pose(m[s..' Shoulder'],CFrame.Angles(swing+reach*1.35+frenzy*.9+lead*.45+hug*1.2+flinch*2.2+wave*(2.6+.25*math.sin(now*9)),0,k*(.06+hug*.5-lead*.35)))
+                pose(m[s..' Hip'],CFrame.Angles(math.sin(p+(k>0 and 0 or math.pi))*.32*move,0,0))
+            end
+        elseif rig.kind=='Yoyo' then
+            -- The Yo-Yo Kid (Story build 2026-10-29): a loose, lanky stalk; the long arms swing late, the yo-yo head lolls
+            -- and turns slowly as if listening; reach = both arms out.
+            pose(m.TorsoJoint,CFrame.new(0,math.abs(math.sin(p))*.1*move,0)*CFrame.Angles(.1+.25*frenzy,math.sin(p*.5)*.08*move,math.sin(p)*.05*move))
+            pose(m.Neck,CFrame.Angles(math.sin(now*.8+rig.seed)*.08-.1*frenzy,math.sin(now*.37+rig.seed)*.45*(1-frenzy),.3*math.sin(now*.55+rig.seed)))
+            for _,s in {'Left','Right'}do
+                local k=s=='Left' and 1 or -1
+                pose(m[s..' Shoulder'],CFrame.Angles(math.sin(p+(k>0 and math.pi or 0)-.8)*.45*move+reach*1.4+frenzy*.6,0,k*.05))
+                pose(m[s..' Hip'],CFrame.Angles(math.sin(p+(k>0 and 0 or math.pi))*.45*move,0,0))
+            end
+        else
+            -- The Dancer glides on her toe: arms keep the hoop, open wide while she looks; a lean into the chase.
+            pose(m.TorsoJoint,CFrame.new(0,math.sin(now*1.6+rig.seed)*.06,0)*CFrame.Angles(.08*frenzy+.2*reach,0,math.sin(p*.5)*.04*move))
+            pose(m.Neck,CFrame.Angles(math.sin(now*.9)*.05,math.sin(now*.5+rig.seed)*.2,math.sin(now*1.3+rig.seed)*.12))
+            local open=(dance=='Look' or attack=='Twirl') and 1 or 0
+            for _,s in {'Left','Right'}do
+                local k=s=='Left' and 1 or -1
+                pose(m[s..' Shoulder'],CFrame.Angles(-open*1.2+reach*.6+math.sin(now*1.1+k)*.04,0,k*open*1.1))
+            end
+        end
+    end
+    if rig.kind=='Dancer' then
+        -- The key turns while the tune plays, slows as it winds down and stops while she looks.
+        local target=dance=='Dance' and 4 or dance=='Winding' and math.max(.4,4*math.clamp(((model:GetAttribute('DanceUntil') or 0)-Workspace:GetServerTimeNow())/1.6,0,1)) or 0
+        b.keyRate+=(target-b.keyRate)*(1-math.exp(-dt*6));b.key=(b.key+b.keyRate*dt)%TAU
+        pose(m.KeyJoint,CFrame.Angles(0,0,b.key))
+        pose(m.TutuJoint,CFrame.Angles(math.sin(now*3.1+rig.seed)*.03*(1+frenzy),0,math.sin(now*2.3)*.04*(1+frenzy)))
+        pose(m.LegBackJoint,CFrame.Angles(math.sin(now*1.2+rig.seed)*.06-.15*frenzy,0,0))
+    else
+        -- The scarf tail trails and swings from the body's real motion.
+        local torso=m.ScarfJoint and m.ScarfJoint.Part0
+        if torso then pose(m.ScarfJoint,pendulum(b.scarf,torso,root.CFrame.Rotation,dt,40,2.6,.35,.6)) end
+    end
+end
+-- Attack poses (MonsterAbilities, 2026-10-22): laid over the walk cycle while the server's AttackPose is set.
+local function attackPose(model,m)
+    local name=model:GetAttribute('AttackPose');if not name then return end
+    local age=Workspace:GetServerTimeNow()-(model:GetAttribute('AttackPoseAt')or 0)
+    local ease=math.clamp(age/.25,0,1);ease=ease*ease*(3-2*ease)
+    if name=='Carry' or name=='Reach' then
+        local lift=name=='Carry' and 1.55 or 1.25
+        local bob=math.sin(age*5.2)*.08
+        pose(m.LeftShoulder,CFrame.Angles((lift+bob)*ease,0,-.22*ease));pose(m.RightShoulder,CFrame.Angles((lift+bob)*ease,0,.22*ease))
+        pose(m.LeftElbow,CFrame.Angles(.55*ease,0,0));pose(m.RightElbow,CFrame.Angles(.55*ease,0,0))
+        pose(m.LeftWrist,CFrame.Angles(.25*ease,0,0));pose(m.RightWrist,CFrame.Angles(.25*ease,0,0))
+        if m.NeckJoint then pose(m.NeckJoint,CFrame.Angles(.18*ease,math.sin(age*1.7)*.25,math.sin(age*2.3)*.12))end
+    elseif name=='Swing' then
+        local a=math.clamp(age/.3,0,1)
+        pose(m.RightShoulder,CFrame.Angles(2.5-2.9*a*a,0,.35));pose(m.RightElbow,CFrame.Angles(.2+.4*a,0,0))
+        pose(m.LeftShoulder,CFrame.Angles(.4,0,-.3))
+    elseif name=='Stare' then
+        pose(m.LeftShoulder,CFrame.Angles(.35*ease,0,-.15));pose(m.RightShoulder,CFrame.Angles(.35*ease,0,.15))
+        if m.NeckJoint then pose(m.NeckJoint,CFrame.Angles(.22*ease+math.sin(age*9)*.02,0,math.sin(age*1.3)*.08))end
+    elseif name=='Laser' then
+        local shake=math.sin(age*48)*.04
+        if m.JawJoint then pose(m.JawJoint,CFrame.Angles(.6*ease+shake,0,0))end
+        pose(m.LeftShoulder,CFrame.Angles(.5*ease,0,-1.0*ease));pose(m.RightShoulder,CFrame.Angles(.5*ease,0,1.0*ease))
+        if m.NeckJoint then pose(m.NeckJoint,CFrame.Angles(-.15*ease+shake,0,0))end
+    elseif name=='Kick' then
+        local a=math.sin(math.clamp(age/.45,0,1)*math.pi)
+        pose(m.LeftHip,CFrame.Angles(1.25*a,0,0));pose(m.LeftKnee,CFrame.Angles(-.2*a,0,0))
+    elseif name=='Lunge' then
+        local a=math.sin(math.clamp(age/.35,0,1)*math.pi*.5)
+        for _,side in {'Left','Right'}do
+            local sign=side=='Left'and -1 or 1
+            pose(m[side..'FlailShoulder'],CFrame.Angles(1.7*a,0,sign*.25));pose(m[side..'FlailElbow'],CFrame.Angles(.2,0,0))
+        end
+        if m.TorsoJoint then m.TorsoJoint.Transform*=CFrame.Angles(-.35*a,0,0)end
+    end
+end
+-- Collar Crawler is a weeping angel: report the crawlers this player can see (on screen, not blocked by walls).
+-- CreatureRoamServer freezes any crawler a living player is looking at.
+local SIGHT_RANGE,SIGHT_EVERY=150,.12
+local sightEvent;task.spawn(function()sightEvent=game:GetService('ReplicatedStorage'):WaitForChild('MonsterSightEvent')end)
+local sightParams=RaycastParams.new();sightParams.FilterType=Enum.RaycastFilterType.Exclude
+local sightTimer=0
+RunService.Heartbeat:Connect(function(dt)
+    sightTimer+=dt;if sightTimer<SIGHT_EVERY or not sightEvent then return end;sightTimer=0
+    local lp=game:GetService('Players').LocalPlayer;local cam=Workspace.CurrentCamera
+    if not cam or lp:GetAttribute('MissionActive')~=true or lp:GetAttribute('RoundDead')then return end
+    local seen={}
+    for _,model in folder:GetChildren()do
+        if model:IsA('Model')and model:GetAttribute('CreatureKind')=='Crawler'and model.PrimaryPart then
+            local cf,size=model:GetBoundingBox()
+            for _,pt in {cf.Position,cf.Position+Vector3.new(0,size.Y*.35,0),cf.Position-Vector3.new(0,size.Y*.3,0)}do
+                local v,on=cam:WorldToViewportPoint(pt)
+                if on and v.Z>0 and v.Z<SIGHT_RANGE then
+                    sightParams.FilterDescendantsInstances={lp.Character,model}
+                    local hit=Workspace:Raycast(cam.CFrame.Position,pt-cam.CFrame.Position,sightParams)
+                    if not hit or hit.Instance.Transparency>=.9 then table.insert(seen,model);break end
+                end
+            end
+        end
+    end
+    if #seen>0 then sightEvent:FireServer(seen)end
+end)
 RunService.PreSimulation:Connect(function(dt)
     dt=math.min(dt,.1)
     local now=os.clock()
     for model,rig in pairs(rigs) do
         if not model.Parent then rigs[model]=nil;continue end
+        if model:GetAttribute('Watched')==true then continue end -- weeping-angel crawler: holds its last pose while seen
         local m=rig.motors
         local walking=model:GetAttribute('Walking')==true
         local chasing=walking and model:GetAttribute('AIState')=='Chase'
@@ -428,8 +615,27 @@ RunService.PreSimulation:Connect(function(dt)
                 if root and m.TorsoJoint then
             rig.baseTorsoC0=rig.baseTorsoC0 or m.TorsoJoint.C0
             local target=root.CFrame
+            -- The anchored root arrives in replication steps (~20-30 Hz). Buffer the steps with arrival times and draw the body slightly in the past,
+            -- sliding at constant speed between two real positions instead of surging toward each new step.
+            if rig.sampleRoot~=root then
+                rig.sampleRoot=root;rig.samples={{t=os.clock(),cf=target}};rig.interval=.05
+                if rig.sampleConn then rig.sampleConn:Disconnect() end
+                rig.sampleConn=root:GetPropertyChangedSignal('CFrame'):Connect(function()
+                    local samples,cf,t=rig.samples,root.CFrame,os.clock();local last=samples[#samples]
+                    if last and (cf.Position-last.cf.Position).Magnitude>12 then table.clear(samples);last=nil end
+                    if last and t>last.t then rig.interval=rig.interval*.8+math.min(t-last.t,.12)*.2 end
+                    table.insert(samples,{t=t,cf=cf});if #samples>8 then table.remove(samples,1) end
+                end)
+            end
+            local samples=rig.samples;local renderAt=os.clock()-math.clamp(rig.interval*1.5,.04,.12);local want=samples[#samples] and samples[#samples].cf or target
+            if #samples>=2 and renderAt<samples[#samples].t then
+                want=samples[1].cf
+                for i=#samples,2,-1 do local a,b=samples[i-1],samples[i];if renderAt>=a.t then want=a.cf:Lerp(b.cf,math.clamp((renderAt-a.t)/math.max(b.t-a.t,1e-3),0,1));break end end
+            end
+            -- safety: if no replicated step arrived for a while but the root has moved on, follow the root itself
+            local newest=samples[#samples];if not newest or (os.clock()-newest.t>.2 and (newest.cf.Position-target.Position).Magnitude>.01) then want=target end
             if not rig.visualRoot or (rig.visualRoot.Position-target.Position).Magnitude>12 then rig.visualRoot=target
-            else rig.visualRoot=rig.visualRoot:Lerp(target,1-math.exp(-dt*22)) end
+            else rig.visualRoot=rig.visualRoot:Lerp(want,1-math.exp(-dt*40)) end
             m.TorsoJoint.C0=target:ToObjectSpace(rig.visualRoot)*rig.baseTorsoC0
         end
         local camera=Workspace.CurrentCamera
@@ -446,9 +652,14 @@ RunService.PreSimulation:Connect(function(dt)
         end
         if rig.kind=='Bellhop' then
             if root then animateBellhop(model,rig,m,dt,now,frenzy,walking,root,distance) end
+            attackPose(model,m)
             continue
         elseif rig.kind=='Lantern' or rig.kind=='Neon' then
             if root then animateLantern(model,rig,m,dt,now,frenzy,walking,root,distance) end
+            attackPose(model,m)
+            continue
+        elseif rig.kind=='Mittens' or rig.kind=='Dancer' or rig.kind=='Yoyo' then
+            if root then animateToy(model,rig,m,dt,now,frenzy,walking,root,distance) end
             continue
         end
         if now>=rig.nextLook then
@@ -497,6 +708,7 @@ RunService.PreSimulation:Connect(function(dt)
         end
         pose(m.CollarsJoint,CFrame.Angles(math.sin(phase*.9)*.01,0,0))
         pose(m.TearJoint,CFrame.new(0,math.sin(phase*.5)*.008,0))
+        attackPose(model,m)
     end
 end)
 

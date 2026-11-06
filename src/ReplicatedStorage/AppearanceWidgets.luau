@@ -4,8 +4,8 @@ local TS = game:GetService('TweenService')
 local M = {}
 -- Keyed by the parent's path so the main menu's full re-render keeps the chosen filter.
 local filters = {}
-local ORDER = {'Hat','Ring','Shirt','Shoes','Eyes','Back','Trail','Torch','Title','Aura'}
-local LABEL = {All='ALL',Hat='HAT',Ring='RING',Shirt='INK',Shoes='KICKS',Eyes='EYES',Back='BACK',Trail='TRAIL',Torch='TORCH',Title='TITLE',Aura='AURA',Sets='SETS'}
+local ORDER = {'Hat','Ring','Shirt','Shoes','Eyes','Back','Trail','Torch','Pet','Title','Aura'}
+local LABEL = {All='ALL',Hat='HAT',Ring='RING',Shirt='INK',Shoes='KICKS',Eyes='EYES',Back='BACK',Trail='TRAIL',Torch='TORCH',Pet='PET',Title='TITLE',Aura='AURA',Sets='SETS'}
 local RANK = {}; for i,k in ipairs(ORDER) do RANK[k]=i end
 local PANEL=Color3.fromRGB(22,42,43)
 local CARD=Color3.fromRGB(31,55,53)

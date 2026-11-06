@@ -6,6 +6,21 @@ local Profiles=require(script.Parent.Profiles)
 local Modules=require(script.Parent.RoomModules)
 local P={}
 P.Version=3
+-- Loop mode: corridors join back into each other (no tree of dead ends), the foyer always opens left and
+-- right, and both wings sit on a loop. false restores the old tree generator.
+P.LoopMode=true
+-- Loop-mode tuning (measured with a 12-seed sweep per size; see MapLoops notes):
+-- connectors = extra corridor pieces that close loops; grow = footprint multiplier that pays for the loop corridors;
+-- wingOrder = hall pieces tried for the left/right foyer wings; lowerRooms = aim one ground room lower.
+-- phase 'post' (default) loops a finished layout, so the proven growth success rate is untouched; 'grow' builds
+-- loops while growing (more loops, but most small layouts then fail). best = layouts compared per map.
+-- crowd: connectors keep a room's depth from parallel corridors; slots: connectors may also leave from side slots.
+-- route: post-phase connectors path-find (straight runs, right-angle turns) instead of only going straight.
+-- wings: 'grow' places the left/right foyer wings while growing (before rooms take the space), 'post' afterwards.
+P.Tune={phase='post',connectors=6,grow=1,wingOrder={'Hall24','Hall36','Hall48'},lowerRooms=false,best=6,crowd=true,slots=true,route=true,wings='grow',routeSteps=10}
+P.Tune.best=3 -- layouts compared per map (was 6: startup planning took 3.4 s, 2026-10-22; the wing-loop retry below still looks further)
+local CONNECT_MIN,CONNECT_MAX=12,84 -- connector length range in studs (4-stud steps)
+local LOOP_MIN_DISTANCE=3 -- only join halls at least this many steps apart, so loops go around rooms
 local FLOOR=Rules.FloorStep
 local HALL=Modules.HallWidth
 -- Mall keeps the same topology/gameplay; enlarge only this plan's horizontal
@@ -18,6 +33,12 @@ local MAX_LAYOUT_ATTEMPTS=32
 local MAX_SOCKET_ATTEMPTS=3
 local MAX_ROOM_PLACEMENT_ATTEMPTS=10
 local MAX_GROWTH_STEPS=600
+-- Generation yields a frame now and then, so a server never blocks for seconds while it plans a map
+-- (a long synchronous plan freezes Studio play sessions and stalls live servers).
+local YIELD_EVERY=0.1 -- seconds of work between yields (was 0.05: each yield costs a whole server frame)
+local lastYield=os.clock()
+P.YieldEvery=YIELD_EVERY -- MapGen lowers it while the next map is planned behind the win recap (play must stay smooth there)
+local function breathe() if os.clock()-lastYield>P.YieldEvery then task.wait();lastYield=os.clock() end end
 local OPP={N='S',S='N',E='W',W='E'}
 local SIDES={'N','E','S','W'}
 local function shuffle(a,rng)
@@ -62,6 +83,48 @@ local function sharedSpan(a,b,axis)
  if axis=='x' then return math.max(a.x1,b.x1),math.min(a.x2,b.x2) end
  return math.max(a.z1,b.z1),math.min(a.z2,b.z2)
 end
+-- Spaces on a loop with the foyer: the 2-edge-connected component of the start over open (unboarded,
+-- unlocked) passages. Anything outside it is behind a single doorway or corridor.
+function P.LoopCore(plan)
+ local closed=plan.closed or {};local adj={};local list={}
+ for _,r in ipairs(plan.rooms) do if not closed[r.name] then adj[r.name]={} end end
+ for _,e in ipairs(plan.edges) do if not e.boarded and adj[e.a] and adj[e.b] then
+  table.insert(list,e);table.insert(adj[e.a],{n=e.b,i=#list});table.insert(adj[e.b],{n=e.a,i=#list})
+ end end
+ local disc,low,t,bridge={},{},0,{}
+ local function dfs(u,pe)
+  t+=1;disc[u]=t;low[u]=t
+  for _,x in ipairs(adj[u]) do if x.i~=pe then
+   if not disc[x.n] then dfs(x.n,x.i);low[u]=math.min(low[u],low[x.n]);if low[x.n]>disc[u] then bridge[x.i]=true end
+   else low[u]=math.min(low[u],disc[x.n]) end
+  end end
+ end
+ if not adj[plan.start] then return {} end
+ dfs(plan.start,0)
+ local core={[plan.start]=true};local q={plan.start};local h=1
+ while q[h] do local u=q[h];h+=1;for _,x in ipairs(adj[u]) do if not bridge[x.i] and not core[x.n] then core[x.n]=true;table.insert(q,x.n) end end end
+ return core
+end
+-- Spaces on any loop (incident to a passage that is not a bridge), wherever the loop is.
+function P.CycleSet(plan)
+ local closed=plan.closed or {};local adj={};local list={}
+ for _,r in ipairs(plan.rooms) do if not closed[r.name] then adj[r.name]={} end end
+ for _,e in ipairs(plan.edges) do if not e.boarded and adj[e.a] and adj[e.b] then
+  table.insert(list,e);table.insert(adj[e.a],{n=e.b,i=#list});table.insert(adj[e.b],{n=e.a,i=#list})
+ end end
+ local disc,low,t,bridge={},{},0,{}
+ local function dfs(u,pe)
+  t+=1;disc[u]=t;low[u]=t
+  for _,x in ipairs(adj[u]) do if x.i~=pe then
+   if not disc[x.n] then dfs(x.n,x.i);low[u]=math.min(low[u],low[x.n]);if low[x.n]>disc[u] then bridge[x.i]=true end
+   else low[u]=math.min(low[u],disc[x.n]) end
+  end end
+ end
+ for n in pairs(adj) do if not disc[n] then dfs(n,0) end end
+ local on={}
+ for i,e in ipairs(list) do if not bridge[i] then on[e.a]=true;on[e.b]=true end end
+ return on
+end
 function P.Reach(plan,closed)
  local adj={};for _,r in ipairs(plan.rooms) do adj[r.name]={} end
  for _,e in ipairs(plan.edges) do
@@ -90,6 +153,9 @@ local function newState(seed,attempt,mapKind,sizeClass)
   local dims=({Small={142,104},Medium={160,112},Large={184,124}})[sizeClass] -- bigger ships (was 112x84/132x96/152x108)
   local jx,jz=dims[1]*(0.94+s.rng:NextNumber()*0.12),dims[2]*(0.94+s.rng:NextNumber()*0.12) -- each ship's footprint varies a little
    s.bounds={x1=-jx,x2=jx,z1=foyerZ2-jz,z2=foyerZ2}
+ elseif P.LoopMode and P.Tune.grow~=1 then
+  local g=P.Tune.grow
+  s.bounds={x1=-scale.width*g,x2=scale.width*g,z1=foyerZ2-(2*scale.outer+16)*g,z2=foyerZ2}
  end
  return s
 end
@@ -404,6 +470,264 @@ local function fillRooms(s,level,target)
  end
  return true
 end
+-- Loop closing: a straight corridor from an open socket that runs into another corridor far away in the graph.
+local function sameLevelDistance(s,a,b,limit)
+ local adj={}
+ for _,e in ipairs(s.plan.edges) do
+  local x,y=s.by[e.a],s.by[e.b]
+  if x and y and x.level==a.level and y.level==a.level then
+   adj[e.a]=adj[e.a] or {};table.insert(adj[e.a],e.b);adj[e.b]=adj[e.b] or {};table.insert(adj[e.b],e.a)
+  end
+ end
+ local dist={[a.name]=0};local q={a.name};local h=1
+ while q[h] do
+  local n=q[h];h+=1
+  if n==b.name then return dist[n] end
+  if dist[n]<limit then for _,o in ipairs(adj[n] or {}) do if not dist[o] then dist[o]=dist[n]+1;table.insert(q,o) end end end
+ end
+ return math.huge
+end
+local function freeRect(s,rect)
+ local b=s.bounds
+ if rect.x1<b.x1 or rect.x2>b.x2 or rect.z1<b.z1 or rect.z2>b.z2 then return false end
+ for _,o in ipairs(s.plan.rooms) do if overlaps(o,rect) then return false end end
+ if rect.level>0 and covered(s,rect)<(rect.x2-rect.x1)*(rect.z2-rect.z1)-.01 then return false end
+ return true
+end
+-- The corridor-like space the far end of `rect` (grown toward `side`) runs into, with the shared span.
+local function farTarget(s,rect,side,parent)
+ for _,o in ipairs(s.plan.rooms) do
+  if o~=parent and o.level==rect.level and (o.type=='Hall' or o.type=='Foyer') then
+   local touch,axis,c
+   if side=='N' and math.abs(o.z2-rect.z1)<.01 then touch,axis,c=true,'x',rect.z1
+   elseif side=='S' and math.abs(o.z1-rect.z2)<.01 then touch,axis,c=true,'x',rect.z2
+   elseif side=='E' and math.abs(o.x1-rect.x2)<.01 then touch,axis,c=true,'z',rect.x2
+   elseif side=='W' and math.abs(o.x2-rect.x1)<.01 then touch,axis,c=true,'z',rect.x1 end
+   if touch then
+    local lo,hi=sharedSpan(rect,o,axis)
+    if hi-lo>=HALL-.01 then return o,axis,c,(lo+hi)/2 end
+   end
+  end
+ end
+end
+local function closeLoops(s,level,budget)
+ local made=0
+ -- Corridors not yet on a loop go first (dead-end branches, the wings), open hall ends before side slots.
+ -- Side slots are only spent on corridors that are still off the loop, so rooms keep their doorways.
+ local core=P.LoopCore(s.plan)
+ local list={}
+ for _,f in ipairs(s.frontier) do if f.level==level and f.room.type=='Hall' and (f.class=='hallEnd' or (f.class=='roomDoor' and not core[f.room.name])) then
+  if f.class=='hallEnd' or P.Tune.slots then table.insert(list,{f=f,rank=(core[f.room.name] and 2 or 0)+(f.class=='hallEnd' and 0 or 1)}) end
+ end end
+ shuffle(list,s.rng)
+ table.sort(list,function(a,b) return a.rank<b.rank end)
+ for _,item in ipairs(list) do
+  local f=item.f
+  if made>=budget then break end
+  if not table.find(s.frontier,f) then continue end
+  local parent=f.room
+  local px,pz,axis=socketAt(parent,f.side,f.t)
+  if not portalFits(s,parent,attach(f.side,px,pz,HALL,CONNECT_MIN,0),axis,axis=='x' and px or pz,HALL/2) then continue end
+  for len=CONNECT_MIN,CONNECT_MAX,4 do
+   local rect=attach(f.side,px,pz,HALL,len,0);rect.level=level
+   if not freeRect(s,rect) then break end
+   local o,oaxis,c,v=farTarget(s,rect,f.side,parent)
+   if o then
+    -- Same rule as corridor growth: a parallel corridor closer than a room's depth leaves a dead sliver.
+    local squeezed=false
+    if P.Tune.crowd and len>=24 then
+     local long=(rect.x2-rect.x1)>(rect.z2-rect.z1)
+     local zone={x1=rect.x1-(long and 0 or ROOM_BAND),x2=rect.x2+(long and 0 or ROOM_BAND),z1=rect.z1-(long and ROOM_BAND or 0),z2=rect.z2+(long and ROOM_BAND or 0),level=level}
+     for _,q in ipairs(s.plan.rooms) do if q~=parent and q~=o and q.type=='Hall' and overlaps(q,zone) then squeezed=true;break end end
+    end
+    if not squeezed and sameLevelDistance(s,parent,o,LOOP_MIN_DISTANCE)>=LOOP_MIN_DISTANCE then
+     local r=addRoom(s,'Hall',level,rect,f.depth+1)
+     link(s,parent,r,'open',px,pz,axis,HALL,{span=HALL,connector=true})
+     local x,z=if oaxis=='x' then v else c,if oaxis=='x' then c else v
+     link(s,r,o,'open',x,z,oaxis,HALL,{span=HALL,loop=true,connector=true})
+     consume(s,f)
+     if len>=24 then
+      hallSockets(s,r,OPP[f.side],0)
+      for i=#s.frontier,1,-1 do local g=s.frontier[i];if g.room==r and g.class=='hallEnd' and g.side==f.side then table.remove(s.frontier,i) end end
+     end
+     made+=1;s.plan.connectors=(s.plan.connectors or 0)+1
+    end
+    break
+   end
+  end
+ end
+ return made
+end
+-- Routed loops: from a dead-end corridor (or a foyer wing) find a way through free space in 16-stud squares,
+-- straight runs with right-angle turns, into a corridor at least LOOP_MIN_DISTANCE steps away in the graph.
+-- The last square may add a short straight stub (8 or 12 studs) to meet a corridor that is off the 16-stud lattice.
+local STEP_DIR={N={0,-1},S={0,1},E={1,0},W={-1,0}}
+local STUB_LENGTHS={0,8,12} -- final straight piece; Furnisher needs every space wider than 6.4 studs
+local function squareAt(cx,cz,level) return {x1=cx-HALL/2,x2=cx+HALL/2,z1=cz-HALL/2,z2=cz+HALL/2,level=level} end
+local function stubRect(sq,side,len)
+ if side=='N' then return {x1=sq.x1,x2=sq.x2,z1=sq.z1-len,z2=sq.z1,level=sq.level}
+ elseif side=='S' then return {x1=sq.x1,x2=sq.x2,z1=sq.z2,z2=sq.z2+len,level=sq.level}
+ elseif side=='E' then return {x1=sq.x2,x2=sq.x2+len,z1=sq.z1,z2=sq.z2,level=sq.level}
+ else return {x1=sq.x1-len,x2=sq.x1,z1=sq.z1,z2=sq.z2,level=sq.level} end
+end
+-- Link two touching rectangles through the middle of their shared face.
+local function faceLink(s,a,b,extra)
+ local axis,c
+ if math.abs(a.x2-b.x1)<.01 then axis,c='z',a.x2 elseif math.abs(b.x2-a.x1)<.01 then axis,c='z',a.x1
+ elseif math.abs(a.z2-b.z1)<.01 then axis,c='x',a.z2 else axis,c='x',a.z1 end
+ local lo,hi=sharedSpan(a,b,axis);local v=(lo+hi)/2
+ local x,z=if axis=='x' then v else c,if axis=='x' then c else v
+ return link(s,a,b,'open',x,z,axis,HALL,extra or {span=math.min(HALL,hi-lo)})
+end
+-- Rooms a passage may open into with a door: not stairs, baths (never transit), the foyer front or north/south-only rooms.
+-- Bed rooms are left out too: an extra door takes the wall a bed needs (Builder fails "incomplete furniture").
+local BED_ROOMS={Bedroom=true,Master=true,Servants=true,Nursery=true}
+local function routeRoom(r) return r.type~='Hall' and r.type~='Stair' and r.type~='Bath' and r.type~='Foyer' and not NS_DOORS[r.type] and not BED_ROOMS[r.type] end
+local function passKind(r) return if r.type=='Hall' or r.type=='Foyer' then 'open' else 'door' end
+-- Like farTarget, but a passage may also end at a room's outer wall (through a door).
+local function routeTarget(s,rect,side,from)
+ for _,o in ipairs(s.plan.rooms) do
+  if o~=from and o.level==rect.level and (o.type=='Hall' or o.type=='Foyer' or routeRoom(o)) then
+   local axis
+   if (side=='N' and math.abs(o.z2-rect.z1)<.01) or (side=='S' and math.abs(o.z1-rect.z2)<.01) then axis='x'
+   elseif (side=='E' and math.abs(o.x1-rect.x2)<.01) or (side=='W' and math.abs(o.x2-rect.x1)<.01) then axis='z' end
+   local touch=axis~=nil
+   if touch then local lo,hi=sharedSpan(rect,o,axis);if hi-lo>=HALL-.01 then return o end end
+  end
+ end
+end
+-- Is part of `side` of hall h around `v` already used by a doorway or opening?
+local function wallBusy(s,h,side,v)
+ for _,e in ipairs(s.plan.edges) do if (e.a==h.name or e.b==h.name) and e.kind~='stairs' then
+  local w=(e.width or Rules.DoorWidth)/2+HALL/2+2
+  if side=='N' and e.axis=='x' and math.abs(e.z-h.z1)<.01 and math.abs(e.x-v)<w then return true end
+  if side=='S' and e.axis=='x' and math.abs(e.z-h.z2)<.01 and math.abs(e.x-v)<w then return true end
+  if side=='W' and e.axis=='z' and math.abs(e.x-h.x1)<.01 and math.abs(e.z-v)<w then return true end
+  if side=='E' and e.axis=='z' and math.abs(e.x-h.x2)<.01 and math.abs(e.z-v)<w then return true end
+ end end
+ return false
+end
+-- Graph steps from `from` to every same-floor space up to `limit` (one pass, reused for every target check).
+local function stepsFrom(s,from,limit)
+ local adj={}
+ for _,e in ipairs(s.plan.edges) do
+  local x,y=s.by[e.a],s.by[e.b]
+  if x and y and x.level==from.level and y.level==from.level then
+   adj[e.a]=adj[e.a] or {};table.insert(adj[e.a],e.b);adj[e.b]=adj[e.b] or {};table.insert(adj[e.b],e.a)
+  end
+ end
+ local dist={[from.name]=0};local q={from.name};local h=1
+ while q[h] do local n=q[h];h+=1;if dist[n]<limit then for _,o in ipairs(adj[n] or {}) do if not dist[o] then dist[o]=dist[n]+1;table.insert(q,o) end end end end
+ return dist
+end
+-- One breadth-first search from every free spot along hall h's walls at once; returns true when a loop was built.
+local function routeFromHall(s,h,level)
+ local function key(x,z) return x..','..z end
+ local steps=stepsFrom(s,h,LOOP_MIN_DISTANCE)
+ local prev,src,q={}, {}, {}
+ for _,side in ipairs(SIDES) do
+  local len=if side=='N' or side=='S' then h.x2-h.x1 else h.z2-h.z1
+  local d=STEP_DIR[side]
+  for t=-len/2+HALL/2,len/2-HALL/2+.01,4 do
+   local px,pz,axis=socketAt(h,side,t)
+   local sx,sz=px+d[1]*HALL/2,pz+d[2]*HALL/2
+   local k=key(sx,sz)
+   if prev[k]==nil and not wallBusy(s,h,side,axis=='x' and px or pz) and freeRect(s,squareAt(sx,sz,level)) then
+    prev[k]=false;src[k]={px=px,pz=pz,axis=axis};table.insert(q,{sx,sz,0})
+   end
+  end
+ end
+ local h0=1;local found
+ while q[h0] and not found do
+  local cx,cz,n=q[h0][1],q[h0][2],q[h0][3];h0+=1
+  local sq=squareAt(cx,cz,level)
+  for _,side in ipairs(SIDES) do
+   if found then break end
+   for _,len in ipairs(STUB_LENGTHS) do
+    local probe=if len==0 then sq else stubRect(sq,side,len)
+    if len>0 and not freeRect(s,probe) then break end
+    local o=routeTarget(s,probe,side,h)
+    if o then
+     if (steps[o.name] or math.huge)>=LOOP_MIN_DISTANCE then found={x=cx,z=cz,side=side,len=len,o=o} end
+     break
+    end
+   end
+  end
+  if not found and n<P.Tune.routeSteps then
+   for _,side in ipairs(SIDES) do
+    local dd=STEP_DIR[side];local nx,nz=cx+dd[1]*HALL,cz+dd[2]*HALL
+    if prev[key(nx,nz)]==nil and freeRect(s,squareAt(nx,nz,level)) then prev[key(nx,nz)]={cx,cz};table.insert(q,{nx,nz,n+1}) end
+   end
+  end
+ end
+ if not found then return false end
+ local path={};local cur={found.x,found.z}
+ while cur do table.insert(path,1,cur);cur=prev[key(cur[1],cur[2])] or nil end
+ local origin=src[key(path[1][1],path[1][2])]
+ local runs={};local run={path[1]};local dir
+ for i=2,#path do
+  local dname=if path[i][1]~=path[i-1][1] then 'x' else 'z'
+  if dir==nil or dname==dir then table.insert(run,path[i]);dir=dname else table.insert(runs,run);run={path[i]};dir=nil end
+ end
+ table.insert(runs,run)
+ local pieces={}
+ for _,rn in ipairs(runs) do
+  local r={x1=math.huge,x2=-math.huge,z1=math.huge,z2=-math.huge}
+  for _,p in ipairs(rn) do local sq=squareAt(p[1],p[2],level);r.x1=math.min(r.x1,sq.x1);r.x2=math.max(r.x2,sq.x2);r.z1=math.min(r.z1,sq.z1);r.z2=math.max(r.z2,sq.z2) end
+  table.insert(pieces,addRoom(s,'Hall',level,r,h.graphDepth+#pieces+1))
+ end
+ local last=pieces[#pieces]
+ if found.len>0 then
+  local stub=addRoom(s,'Hall',level,stubRect(squareAt(found.x,found.z,level),found.side,found.len),h.graphDepth+#pieces+1)
+  table.insert(pieces,stub);last=stub
+ end
+ local startKind=passKind(h)
+ -- A door gets the normal doorway cut; only an open archway spans the whole passage width (a 16-stud cut around
+ -- a door leaves see-through gaps beside its frame).
+ link(s,h,pieces[1],startKind,origin.px,origin.pz,origin.axis,if startKind=='open' then HALL else Rules.DoorWidth,if startKind=='open' then {span=HALL,connector=true} else {connector=true})
+ for i=2,#pieces do faceLink(s,pieces[i-1],pieces[i],{span=HALL,connector=true}) end
+ local e=faceLink(s,last,found.o,{span=HALL,loop=true,connector=true})
+ if passKind(found.o)=='door' then e.kind='door';e.width=Rules.DoorWidth;e.span=nil end
+ s.plan.connectors=(s.plan.connectors or 0)+1
+ return true
+end
+local function routeLoops(s,level,budget)
+ local made=0;local failed={}
+ for _=1,budget do
+  -- Re-rank every time: a new loop changes which corridors are still dead ends. Wings first.
+  local on=P.CycleSet(s.plan);local list={}
+  local wing={};for _,n in pairs(s.wings or {}) do wing[n]=true end
+  for _,r in ipairs(s.plan.rooms) do if r.level==level and (r.type=='Hall' or routeRoom(r)) and not on[r.name] and not failed[r.name] then
+   table.insert(list,{h=r,rank=wing[r.name] and 0 or (r.type=='Hall' and 1 or 2)})
+  end end
+  shuffle(list,s.rng);table.sort(list,function(a,b) return a.rank<b.rank end)
+  local ok=false
+  for _,item in ipairs(list) do breathe();if routeFromHall(s,item.h,level) then ok=true;break else failed[item.h.name]=true end end
+  if not ok then break end
+  made+=1
+ end
+ return made
+end
+-- Left and right wings off the foyer, so the entrance never funnels into one corridor.
+local function foyerWings(s)
+ local foyer=s.by[s.plan.start];s.wings={};s.plan.wings=s.wings -- names of the left/right wing halls
+ for _,side in ipairs({'W','E'}) do
+  -- An E/W opening spine already used this side.
+  for _,e in ipairs(s.plan.edges) do
+   local o=(e.a==foyer.name and s.by[e.b]) or (e.b==foyer.name and s.by[e.a])
+   if o and o.type=='Hall' and ((side=='W' and o.x2<=foyer.x1+.01) or (side=='E' and o.x1>=foyer.x2-.01)) then s.wings[side]=o.name end
+  end
+  if not s.wings[side] then
+   for _,f in ipairs(table.clone(s.frontier)) do if f.room==foyer and f.side==side and not s.wings[side] then
+    for _,id in ipairs(P.Tune.wingOrder) do
+     for _,m in ipairs(Modules.Halls) do if m.id==id and not s.wings[side] then
+      local h=tryHall(s,f,m);if h then consume(s,f);s.wings[side]=h.name end
+     end end
+    end
+   end end
+  end
+ end
+end
 local function grow(s,level,target)
  local hallTarget=math.max(2,math.floor(s.scale.halls*(level==0 and 1 or .6)*(s.hallMul or 1)+.5))
  -- Main path first: from the foyer on the ground floor, from each stair top upstairs.
@@ -416,8 +740,13 @@ local function grow(s,level,target)
    if placed then consume(s,f) end
   else spine(s,f,level==0 and (s.spineLength or 2) or 1) end
  end
+ local loops=P.LoopMode and not s.cruise and (P.Tune.phase=='grow' or P.Tune.phase=='both')
+ if P.LoopMode and not s.cruise and level==0 and (loops or P.Tune.wings=='grow') then foyerWings(s) end
+ local connectBudget=P.Tune.connectors
  for round=1,5 do
   corridor(s,level,round==1 and math.max(0,hallTarget-s.hallCount[level]) or 2)
+  -- Join the corridor tree back into itself before rooms take the free space.
+  if loops and connectBudget>0 then connectBudget-=closeLoops(s,level,connectBudget) end
   if level==0 then
    while #s.plan.stairs<s.stairsNeeded do
     if not placeOn(s,0,function(f) return slot(f) and f.depth>=2 end,function(f) return tryStair(s,f) end) then break end
@@ -456,7 +785,8 @@ local function upperFloor(s,target)
  end
  if #queue==0 then return false end
  -- Cruise keeps the full longitudinal upper spine so adjacent cabins never detour via the lower deck.
- local hallBudget=if s.cruise then s.hallCount[0] else math.max(#queue,math.floor(s.hallCount[0]*.75+.5))
+ -- Loop mode copies a few more halls so more of the ground floor's loops exist upstairs too.
+ local hallBudget=if s.cruise then s.hallCount[0] else math.max(#queue,math.floor(s.hallCount[0]*(P.LoopMode and .85 or .75)+.5))
  local head=1
  while queue[head] do
   local h=queue[head];head+=1
@@ -483,9 +813,12 @@ local function upperFloor(s,target)
  local function doorway(c,t)
   local u=copy(c.room,t);link(s,u,up[c.hall.name],'door',c.edge.x,c.edge.z,c.edge.axis,Rules.DoorWidth);u.entrySide=true;return u
  end
- -- Required suites first, over two ground rooms that share a wall.
+ -- Required suites first, over two ground rooms that share a wall. The primary (Master/Nursery) needs a ground room
+ -- with space for its bed besides two doorways: a small one (a 28x24 pantry) leaves the bed nowhere to go and
+ -- furniture blocking the way in.
+ local function roomy(r) local w,d=r.x2-r.x1,r.z2-r.z1;return w*d>=900 and math.min(w,d)>=24 end
  for _,suite in ipairs(Modules.Suites) do if suite.floor==1 then
-  for _,c in ipairs(candidates) do if free(c.room) then
+  for _,c in ipairs(candidates) do if free(c.room) and roomy(c.room) then
    local mate,axis,lo,hi,wall
    for _,o in ipairs(s.plan.rooms) do if o.level==0 and o~=c.room and free(o) then
     local a,b=c.room,o
@@ -518,14 +851,14 @@ local function upperFloor(s,target)
  return s.roomCount[1]>=math.min(target,4)
 end
 -- Empty leaf halls are pruned so every corridor leads somewhere.
-local function prune(s)
+local function prune(s,keep)
  local changed=true
  while changed do
   changed=false
   for _,r in ipairs(table.clone(s.plan.rooms)) do if r.type=='Hall' then
    local degree,stair=0,false
    for _,e in ipairs(s.plan.edges) do if e.a==r.name or e.b==r.name then degree+=1;stair=stair or e.stairAccess end end
-   if degree<=1 and not stair then removeRoom(s,r);changed=true end
+   if degree<=1 and not stair and not (keep and keep[r.name]) then removeRoom(s,r);changed=true end
   end end
  end
 end
@@ -547,18 +880,26 @@ local function connectLoops(s)
   end
  end end
  shuffle(pairsList,s.rng)
- local function eligible(r) return r.type~='Stair' and r.type~='Bath' and r.type~='Foyer' and not NS_DOORS[r.type] end
+ local loops=P.LoopMode and not s.cruise
+ -- Bed rooms get no extra doors in loop mode: a second doorway takes the wall the bed needs ("incomplete furniture").
+ local function eligible(r) return r.type~='Stair' and r.type~='Bath' and (r.type~='Foyer' or loops) and not NS_DOORS[r.type] and not(P.LoopMode and BED_ROOMS[r.type]) end
+ -- Loop mode: a room between two corridors gets a door onto each, so it is a shortcut, not a trap.
+ local passBudget=if loops then s.scale.loops+5 else 0;local passMade=0
  for _,p in ipairs(pairsList) do
   local a,b=p.a,p.b
   if not eligible(a) or not eligible(b) then continue end
-  local hallPair=a.type=='Hall' and b.type=='Hall'
-  if not hallPair and made>=s.scale.loops then continue end
+  if (a.type=='Foyer' or b.type=='Foyer') and not ((a.type=='Foyer' and b.type=='Hall') or (b.type=='Foyer' and a.type=='Hall')) then continue end
+  local hallPair=(a.type=='Hall' or a.type=='Foyer') and (b.type=='Hall' or b.type=='Foyer')
+  local passThrough=not hallPair and (a.type=='Hall')~=(b.type=='Hall') and passMade<passBudget and a.level==0
+   and routeRoom(if a.type=='Hall' then b else a)
+  if passThrough and made<s.scale.loops then passThrough=false end
+  if not hallPair and not passThrough and made>=s.scale.loops then continue end
   if hallPair and p.hi-p.lo<HALL then continue end
   local v=4*math.floor((p.lo+p.hi)/8)
   if hallPair or v-6<p.lo or v+6>p.hi then v=(p.lo+p.hi)/2 end
   local x,z=if p.axis=='x' then v else p.c,if p.axis=='x' then p.c else v
   if hallPair then link(s,a,b,'open',x,z,p.axis,HALL,{span=math.min(HALL,p.hi-p.lo),loop=true})
-  else link(s,a,b,'door',x,z,p.axis,Rules.DoorWidth,{loop=true});made+=1 end
+  else link(s,a,b,'door',x,z,p.axis,Rules.DoorWidth,{loop=true});if passThrough then passMade+=1 else made+=1 end end
  end
  s.plan.loopDoors=made
 end
@@ -587,6 +928,12 @@ local function finish(s)
  -- Same lock safety rule as the original: removing locked rooms leaves all open rooms reachable.
  local order={};for _,r in ipairs(plan.rooms) do if Rules.Types[r.type].zone~='hall' and r.type~='Foyer' and not r.suite then table.insert(order,r) end end
  shuffle(order,rng);local closed={}
+ -- Loop mode locks dead-end rooms first, so locks never board up a shortcut.
+ if P.LoopMode then
+  local doors={};for _,e in ipairs(plan.edges) do if e.kind=='door' then doors[e.a]=(doors[e.a] or 0)+1;doors[e.b]=(doors[e.b] or 0)+1 end end
+  local rank={};for i,r in ipairs(order) do rank[r]=i end
+  table.sort(order,function(a,b) local da,db=doors[a.name] or 0,doors[b.name] or 0;if da~=db then return da<db end;return rank[a]<rank[b] end)
+ end
  for _,r in ipairs(order) do
   if #plan.locks==Rules.LockCount then break end
   closed[r.name]=true;local seen=P.Reach(plan,closed);local safe=true
@@ -663,7 +1010,8 @@ local function layout(seed,attempt,mapKind,sizeClass)
   end
  end
  local scale=s.scale
- local f1=scale.f1+s.rng:NextInteger(-1,1);local f2=scale.f2+s.rng:NextInteger(-1,1)
+ -- Loop corridors take floor space, so loop mode aims one room lower at most (never below the validator's floor).
+ local f1=scale.f1+s.rng:NextInteger(-1,if P.LoopMode and P.Tune.lowerRooms and not s.cruise then 0 else 1);local f2=scale.f2+s.rng:NextInteger(-1,1)
  if s.cruise then local small=scale.f1<=10;f1+=s.rng:NextInteger(small and 1 or 3,small and 4 or 6);f2+=s.rng:NextInteger(small and 1 or 2,small and 3 or 5) end -- more, and more varied, cabins per deck
  local ok1=grow(s,0,f1)
  if #s.plan.stairs<s.stairsNeeded then return nil,'vertical transition not placed',s end
@@ -672,10 +1020,31 @@ local function layout(seed,attempt,mapKind,sizeClass)
  local ok2=upperFloor(s,f2)
  for _,suite in ipairs(Modules.Suites) do if not s.suites[suite.primary] then return nil,'required '..suite.primary..' suite missing',s end end
  if not ok2 then return nil,'upper floor incomplete',s end
- prune(s)
+ -- Loop mode keeps the foyer wings until the routing pass has tried to loop them (the last prune drops stubs).
+ local keepWings={};for _,n in pairs(s.wings or {}) do keepWings[n]=true end
+ prune(s,keepWings)
+ if P.LoopMode and not s.cruise and (P.Tune.phase=='post' or P.Tune.phase=='both') then
+  -- Loop the finished ground floor: left/right wings off the foyer where they fit, then corridors that run
+  -- from open corridor ends into other corridors. Rooms are already placed, so this never costs a room.
+  if not s.wings then foyerWings(s) end
+  if P.Tune.route then routeLoops(s,0,P.Tune.connectors) else closeLoops(s,0,P.Tune.connectors) end
+ end
  connectLoops(s)
+ -- A wing or connector that found no loop and no room is a stub: drop it.
+ if P.LoopMode and not s.cruise then prune(s) end
  finish(s)
  s.plan.targets={f1=f1,f2=f2,stairs=s.stairsNeeded}
+ if P.LoopMode and not s.cruise then
+  -- Both wings must exist and sit on a loop with the foyer; the last attempts accept less so a map always builds.
+  local core=P.LoopCore(s.plan);local halls,inCore=0,0
+  for _,r in ipairs(s.plan.rooms) do if r.type=='Hall' then halls+=1;if core[r.name] then inCore+=1 end end end
+  s.plan.loopCoverage=inCore/math.max(1,halls)
+  s.plan.wingsLooped=s.wings~=nil and s.wings.W~=nil and s.wings.E~=nil and core[s.wings.W]==true and core[s.wings.E]==true
+  if P.Tune.phase=='grow' and attempt<MAX_LAYOUT_ATTEMPTS-4 then
+   if not s.plan.wingsLooped then return nil,'foyer wings not on a loop',s end
+   if s.plan.loopCoverage<.6 then return nil,'too few corridors on loops',s end
+  end
+ end
  if s.cruise then
   local x1,x2,z1,z2=math.huge,-math.huge,math.huge,-math.huge
   for _,r in ipairs(s.plan.rooms)do x1=math.min(x1,r.x1);x2=math.max(x2,r.x2);z1=math.min(z1,r.z1);z2=math.max(z2,r.z2)end
@@ -730,6 +1099,7 @@ function P.Generate(seed,players,mapKind,sizeClass)
  local reasons={}
  local attemptLimit=if mapKind=='Cruise' then 96 else MAX_LAYOUT_ATTEMPTS
  for attempt=0,attemptLimit-1 do
+  breathe()
   local plan,why,state=layout(seed,attempt,mapKind,sizeClass)
   P.LastFailedState=state
   if plan then plan.layoutFailures=reasons;return Profiles.Apply(applyGeometry(plan,mapKind),mapKind,sizeClass) end
@@ -754,12 +1124,20 @@ function P.Score(plan)
  for _,r in ipairs(plan.rooms) do types[r.type]=true;local area=(r.x2-r.x1)*(r.z2-r.z1);total+=area;if r.type=='Hall' then hallArea+=area end end
  for _,e in ipairs(plan.edges) do if e.loop and not e.boarded then loops+=1 end end
  local diversity=0;for _ in pairs(types) do diversity+=1 end
- return diversity*100-hallArea/math.max(1,total)*200+math.min(loops,6)*25+#(plan.stairs or {})*40
+ local loopBonus=(plan.loopCoverage or 0)*400+(plan.wingsLooped and 200 or 0)
+ return diversity*100-hallArea/math.max(1,total)*200+math.min(loops,6)*25+#(plan.stairs or {})*40+loopBonus
 end
 function P.Best(seed,count,validate,players,mapKind,sizeClass)
+ if P.LoopMode then count=math.max(count,P.Tune.best) end -- more candidates, so a fully looped one is usually among them
  local best,bestScore
- for i=0,count-1 do local p=P.Generate(seed+i*7919,players,mapKind,sizeClass);local ok=validate(p)
+ for i=0,count-1 do breathe();local p=P.Generate(seed+i*7919,players,mapKind,sizeClass);local ok=validate(p)
   if ok then local score=P.Score(p);if not bestScore or score>bestScore then best,bestScore=p,score end end
+ end
+ -- Loop mode: if no candidate looped both foyer wings, look a little further before settling.
+ if P.LoopMode and best and best.wingsLooped==false then -- nil on Cruise (no wings)
+  for i=count,count+5 do breathe();local p=P.Generate(seed+i*7919,players,mapKind,sizeClass)
+   if p.wingsLooped and validate(p) then local score=P.Score(p);if score>bestScore then best,bestScore=p,score end;break end
+  end
  end
  return best or P.Generate(seed,players,mapKind,sizeClass)
 end

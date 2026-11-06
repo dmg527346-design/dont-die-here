@@ -43,7 +43,8 @@ event.OnServerEvent:Connect(function(p,action,value)
   local ok,message=Progress.SetFlashlightColor(p,Color3.new(math.clamp(value.R,0,1),math.clamp(value.G,0,1),math.clamp(value.B,0,1)))
   reply(p,action,ok,message)
  elseif action=='jumpscareAll'then
-  if busy[p]or not living(p)or p:GetAttribute('MonsterJumpscareActive')then return end
+  if busy[p]or p:GetAttribute('MonsterJumpscareActive')then return end
+  if not living(p)then reply(p,action,false,'Use it while you are alive in a game, from the ROBUX panel in the van.');return end
   if not allow(p,'scareRequest',1)then return end
   if not Progress.CanUseVanShop(p)then reply(p,action,false,'Use group jumpscares inside the van.');return end
   local limits=gates[p];if os.clock()<(limits.scareSpent or 0)then reply(p,action,false,'Wait before scaring everyone again.');return end

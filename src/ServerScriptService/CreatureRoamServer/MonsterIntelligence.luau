@@ -22,7 +22,19 @@ local names={'Hunter','Mimic','Stalker','Trickster','Predator'}
 -- seconds. Only a hunt that finds nothing ends in a disengage (forget, turn away, deaf for DISENGAGE_SECONDS).
 local LOST_GRACE=1.2 -- out of sight this long = no longer 'in view' (the hunt starts)
 local HUNT_MEMORY,HUNT_MEMORY_HARD=10,6 -- then it hunts from memory for 10s (+6s at full difficulty) before giving up
-local DISENGAGE_SECONDS=8 -- after a failed hunt it ignores noises this long (was 25)
+local HUNT_MEMORY_L2=7 -- level 2: still searches when unsure, but gives up and moves on sooner (2026-10-22)
+local function huntMemoryFor(s)return(s.level==2 and HUNT_MEMORY_L2 or HUNT_MEMORY)+HUNT_MEMORY_HARD*s.difficulty end
+local DISENGAGE_SECONDS=5 -- was 8; after a failed hunt it ignores noises this long (was 25)
+-- Prowl: when nothing has happened for a while, wander toward a ROOM NEXT TO a player's room at patrol pace.
+-- Only the general area; it still has to see or hear them to chase.
+local PROWL_QUIET=10 -- was 25 (owner 2026-10-22: monsters barely noticed anyone); seconds without a chase before it starts drifting toward players
+local PROWL_GAP_MIN,PROWL_GAP_MAX=8,14 -- was 18,30 -- seconds between prowls
+-- Leave alone: a player kept under pressure too long, or pinned in one spot with the monster nearby, is ignored for a while.
+local PRESSURE_RANGE=40 -- monster this close (studs) to a known player counts as pressure
+local PRESSURE_LIMIT=45 -- seconds of pressure (decays when away) before it backs off
+local PINNED_SECONDS,PINNED_MOVE=18,10 -- player moved less than 10 studs in 18s with the monster near = trapped
+local LEAVE_ALONE_SECONDS=20 -- was 40; how long it ignores that player afterwards
+local function rootOf(p)local c=p.Character;return c and c:FindFirstChild('HumanoidRootPart')end
 local function flat(v)return Vector3.new(v.X,0,v.Z)end
 local function normalize(t)
  local total=0;for _,value in pairs(t)do total+=math.max(0,value)end
@@ -53,6 +65,7 @@ function M.New(ctx)
   self.sessionHabits[identity]=self.sessionHabits[identity]or{}
   s.brain={habits=self.sessionHabits[identity],knowledge={},rooms={},visited={},noiseCursor=self.serial,personality=personalities[name],decisionAt=0,lastSense=now,untilAt=0,lastMimic=now-20,lastHiddenCheck=0}
   s.model:SetAttribute('Personality',name)
+  s.model:SetAttribute('SpreadLoner',rng:NextNumber()<.65) -- a loner leaves a player another monster is chasing (ctx.crowded)
  end
  local function record(b,p)
   local k=b.knowledge[p.UserId]
@@ -107,12 +120,23 @@ function M.New(ctx)
  end
  function self:Hear(s,e,now)
   if now-e.time>1.5 or self.ctx.nearVan(e.position,3)then return end
+  if e.kind=='PackCall' then
+   -- Round 3+ (round 3+ smarter, owner 2026-10-22): a chasing monster calls the others. They hear it through walls from anywhere and try to cut the player off.
+   if type(e.detail)~='table' or e.detail.from==s.model or (s.level or 0)<3 then return end
+   if not(typeof(e.source)=='Instance' and e.source:IsA('Player'))then return end
+   local k=record(s.brain,e.source);if now<(k.leaveUntil or 0) then return end
+   if s.model:GetAttribute('SpreadLoner') and self.ctx.crowded and self.ctx.crowded(s,e.source) then return end
+   k.heardPosition=e.position;k.heardAt=now;k.packAt=now;k.velocity=flat(e.detail.velocity or Vector3.zero)
+   k.confidence=math.max(k.confidence,.6);k.suspicion=math.max(k.suspicion,40)
+   return
+  end
   local distance=(e.position-s.root.Position).Magnitude
   -- Across floors, sound travels the stair route; a player 4 studs overhead can be 40 away.
   if self.ctx.routeDistance and self.ctx.level(e.position.Y)~=self.ctx.level(s.root.Position.Y) then
    distance=math.max(distance,self.ctx.routeDistance(s.root.Position,e.position))
   end
-  local radius=e.loudness*1.4
+  local o=game.ReplicatedStorage:FindFirstChild('RecoveryRound');o=o and o:GetAttribute('Omen')
+  local radius=e.loudness*1.4*(o=='Hush' and .8 or o=='Restless' and 1.25 or 1) -- omens: Hush hears less, Restless further
   if distance>=radius then return end
   local obstructed=not self.ctx.sees(s,e.position+Vector3.new(0,2,0))
   local strength=(1-distance/math.max(1,radius))*(obstructed and .32 or 1)
@@ -129,6 +153,7 @@ function M.New(ctx)
   end
   if typeof(e.source)=='Instance' and e.source:IsA('Player')then
    local k=record(b,e.source)
+   if now<(k.leaveUntil or 0) then return end
    k.heardPosition=reported;k.heardAt=now;k.confidence=math.max(k.confidence,math.min(.7,strength));k.suspicion=math.min(100,k.suspicion+strength*20)
    if room then
     local old=k.beliefs;local beliefs={};for name,value in pairs(old)do beliefs[name]=value*.45 end
@@ -203,25 +228,53 @@ function M.New(ctx)
    else self:Hear(s,e,now)end
   end end
   b.noiseCursor=self.serial
+  -- Leave-alone bookkeeping uses the real distance so a hider in a closet still counts as pinned.
+  -- Every mission player counts, seen or not: a stuck player the monster never noticed can still be pinned by it.
+  for _,p in Players:GetPlayers()do
+   local root=rootOf(p)
+   if not root or not p:GetAttribute('MissionActive') or p:GetAttribute('RoundDead') then continue end
+   local k=record(b,p)
+   if now>=(k.leaveUntil or 0) then
+    -- Pressure only builds while this monster is chasing that player, and 'pinned' only means trapped in a closet:
+    -- a player looting quietly near a monster it never noticed must not make it look away (owner 2026-10-22).
+    local near=(root.Position-s.root.Position).Magnitude<PRESSURE_RANGE
+    local hiding=p:GetAttribute('Hiding')==true or p:GetAttribute('ClosetState')~=nil
+    k.pressure=math.max(0,(k.pressure or 0)+((near and s.target==p) and dt or -dt*.5))
+    near=near and hiding
+    if not near or not k.pinFrom or (root.Position-k.pinFrom).Magnitude>PINNED_MOVE then k.pinFrom=root.Position;k.pinAt=now end
+    if k.pressure>PRESSURE_LIMIT or (near and now-k.pinAt>PINNED_SECONDS) then
+     k.leaveUntil=now+LEAVE_ALONE_SECONDS;k.pressure=0;k.pinFrom=nil
+     k.confidence=0;k.suspicion=0;k.position=nil;k.heardPosition=nil;k.beliefs={};k.samples={};k.observedCloset=nil
+     if s.target==k.player then
+      d.escapes[k.player.UserId]=now;b.chaseAt=nil;b.questChase=nil;s.target=nil
+     end
+     b.engaged=false;b.noise=nil;b.fakeReturn=nil;b.prowl=nil;b.disengageUntil=now+DISENGAGE_SECONDS
+     s.model:SetAttribute('UtilityAction','LeaveAlone');s.model:SetAttribute('Prowling',nil);s.model:SetAttribute('LeftAloneAt',now)
+     if self.ctx.disengage then self.ctx.disengage(s,root.Position) end
+     b.decisionAt=now+1
+     return
+    end
+   end
+  end
   if now<b.decisionAt then return end
   b.decisionAt=now+rng:NextNumber(.55,.9)
   local candidates={}
   local pressure=now<d.reliefUntil and .45 or 1
   local eligible={}
   -- still being hunted: recently seen players stay on the list even after confidence fades
-  for _,k in pairs(b.knowledge)do if k.visible or k.confidence>.15 or (k.seenAt and now-k.seenAt<HUNT_MEMORY+HUNT_MEMORY_HARD*s.difficulty) then table.insert(eligible,k)end end
+  for _,k in pairs(b.knowledge)do if now<(k.leaveUntil or 0) then continue end;if k.visible or k.confidence>.15 or (k.seenAt and now-k.seenAt<huntMemoryFor(s)) then table.insert(eligible,k)end end
   -- Calm after spawning (CreatureRoamServer calmUntil): only a player close and in sight matters.
   local calm=now<(s.calmUntil or 0)
   s.model:SetAttribute('Calm',calm or nil)
   local disengaged=now<(b.disengageUntil or 0)
   local anyVisible=false
   for _,k in eligible do if k.seenAt and now-k.seenAt<LOST_GRACE then anyVisible=true;break end end
-  local huntMemory=HUNT_MEMORY+HUNT_MEMORY_HARD*s.difficulty
+  local huntMemory=huntMemoryFor(s)
   if anyVisible then b.lastSeenAny=now end
   if b.engaged and not anyVisible and now-(b.lastSeenAny or now)>huntMemory then
    b.engaged=false;b.disengageUntil=now+DISENGAGE_SECONDS;disengaged=true
     local episode=b.questChase;local p=episode and episode.player;local h=p and p.Character and p.Character:FindFirstChildOfClass('Humanoid')
-    if episode and now-episode.started>=5 and h and h.Health>0 and p:GetAttribute('MissionActive')==true and not p:GetAttribute('RoundDead') and not p:GetAttribute('LeavingRun') and p.Character==episode.character then QuestService.Record(p,'ChaseEscaped',1,questContext('chase:'..episode.id))end
+    if episode and now-episode.started>=5 and h and h.Health>0 and p:GetAttribute('MissionActive')==true and not p:GetAttribute('RoundDead') and not p:GetAttribute('LeavingRun') and p.Character==episode.character then local ctx=questContext('chase:'..episode.id);ctx.creatureKind=s.model:GetAttribute('CreatureKind');QuestService.Record(p,'ChaseEscaped',1,ctx)end
     b.questChase=nil
    local avoid=b.engagedAt or s.root.Position
    for _,k in pairs(b.knowledge) do
@@ -252,7 +305,11 @@ function M.New(ctx)
    local grace=now-(d.escapes[k.player.UserId]or -100)<rngGrace(k.player.UserId) and .22 or 1
    local deathGrace=now-(d.deaths[k.player.UserId]or -100)<45 and .35 or 1
    local novice=1 -- (was .8 for a player's first two encounters)
-   if k.visible and k.suspicion>=CHASE_SUSPICION then
+   -- Don't pile on (owner 2026-10-22): a loner leaves this player to the monster already chasing them, unless it is right on top of them.
+   local crowned=(k.player:GetAttribute('CrownedUntil')or 0)>workspace:GetServerTimeNow() -- MansionCrown (ItemBatch7): every monster wants the wearer
+   local crowd=not crowned and s.model:GetAttribute('SpreadLoner') and self.ctx.crowded and self.ctx.crowded(s,k.player)
+   local crowdFar=crowd and (known-s.root.Position).Magnitude>=POINT_BLANK_RANGE
+   if k.visible and k.suspicion>=CHASE_SUSPICION and not crowdFar then
     local chaseAge=b.chaseAt and now-b.chaseAt or 0
     local persistence=math.max(.4,1-math.max(0,chaseAge-18)/35)
     local loopPressure=k.loopConfidence and now-(k.loopAt or 0)<12 and math.max(.4,1-k.loopConfidence*.8)or 1
@@ -260,13 +317,13 @@ function M.New(ctx)
     local horizon=rng:NextNumber(.3,.65+.45*s.difficulty)
     local error=(1-(.6+.3*s.difficulty))*rng:NextNumber(-4,4)
     local goal=known+k.velocity*horizon+Vector3.new(error,0,-error)
-    add(candidates,'Chase',math.max(score,VISIBLE_CHASE_FLOOR),goal,k)
-   elseif k.visible and k.suspicion>=SUSPICIOUS_SUSPICION then
+    add(candidates,'Chase',if crowned then math.max(score*1.6,VISIBLE_CHASE_FLOOR+80) else math.max(score,VISIBLE_CHASE_FLOOR),goal,k)
+   elseif k.visible and k.suspicion>=SUSPICIOUS_SUSPICION and not crowd then
     add(candidates,'Suspicious',30+k.suspicion*.4,known,k)
     add(candidates,'Stalk',k.suspicion*.65*b.personality.stalk*isolation,known,k)
    end
    -- Out of sight: hunt the predicted route from the last sighting, then fresh sounds of this player.
-   if not k.visible and not calm and not disengaged then
+   if not k.visible and not calm and not disengaged and not crowd then
     if k.position and k.seenAt and now-k.seenAt<huntMemory then
      add(candidates,'Search',115*b.personality.pursuit*math.max(.5,k.confidence),known,k)
     elseif k.heardPosition and k.heardAt and now-k.heardAt<6+6*s.difficulty then
@@ -275,6 +332,10 @@ function M.New(ctx)
    end
    if k.observedCloset and k.observedCloset.Parent and now<(k.observedUntil or 0) then
     add(candidates,'CheckHiding',125,k.observedCloset.Position,k,k.observedCloset)
+   end
+   -- Answering a pack call: head for the room ahead of the chased player (Ambush handler below).
+   if not k.visible and not calm and not disengaged and not crowd and k.packAt and now-k.packAt<8 and k.heardPosition then
+    add(candidates,'Ambush',150,k.heardPosition,k)
    end
    local mimicApi=SS:FindFirstChild('MonsterMimicApi')
    local mimicAvailable=not disengaged and k.suspicion>25 and now-b.lastMimic>25 and k.confidence>.2 and not k.visible and mimicApi and mimicApi:Invoke('available',s.model,k.player.UserId)
@@ -303,6 +364,7 @@ function M.New(ctx)
   s.model:SetAttribute('UtilityAction',c.action);s.model:SetAttribute('UtilityScore',math.floor(c.score))
   if c.action=='Chase' then
    s.target=c.k.player;b.chaseAt=b.chaseAt or now;d.lastThreat=now
+   if (s.level or 0)>=3 and now-(b.lastPack or 0)>2.5 and c.k.position then b.lastPack=now;bus:Fire(c.k.position,90,'PackCall',c.k.player,{from=s.model,velocity=c.k.velocity})end
    if not b.questChase or b.questChase.player~=s.target then b.questChase={player=s.target,character=s.target.Character,started=now,id=QuestHttp:GenerateGUID(false)}end
    if old~='Chase' then d.encounters[c.k.player.UserId]=(d.encounters[c.k.player.UserId]or 0)+1 end
    self.ctx.routeTo(s,c.pos,'Chase')
@@ -323,7 +385,7 @@ function M.New(ctx)
    if b.ambushUntil and now>=b.ambushUntil then b.ambushUntil=nil end
    local pos=self:Search(s,c.k,now)
    if c.action=='Ambush' then
-    local origin=c.k.position or c.k.heardPosition
+    local origin=(c.k.packAt and now-c.k.packAt<8 and c.k.heardPosition) or c.k.position or c.k.heardPosition
     local room=origin and self.ctx.roomAt(origin)
     local forward=direction(c.k.velocity)
     local best,bestScore
@@ -368,6 +430,33 @@ function M.New(ctx)
   else
    -- Keep walking the disengage route instead of resetting it to a patrol.
    if old=='Retreat' and s.points and disengaged then return end
+   -- Keep walking an active prowl.
+   if b.prowl and now<b.prowl.untilAt and s.points then return end
+   if b.prowl then b.prowl=nil;s.model:SetAttribute('Prowling',nil)end
+   if not calm and not disengaged and now-d.lastThreat>PROWL_QUIET and now>=(b.nextProwl or 0) then
+    b.nextProwl=now+rng:NextNumber(PROWL_GAP_MIN,PROWL_GAP_MAX)
+    local options={}
+    for _,p in Players:GetPlayers()do
+     local root=rootOf(p);local k=b.knowledge[p.UserId]
+     if root and p:GetAttribute('MissionActive') and not p:GetAttribute('RoundDead') and not p:GetAttribute('Hiding') and not self.ctx.nearVan(root.Position,6)
+      and not (k and now<(k.leaveUntil or 0)) and now-(d.deaths[p.UserId]or -100)>=45 then table.insert(options,root.Position)end
+    end
+    local target=#options>0 and options[rng:NextInteger(1,#options)]
+    local r=target and self.ctx.roomAt(target)
+    if r then
+     -- A neighbouring room, or 40% of the time the player's own room (it still has to see or hear them to chase).
+     local rooms={}
+     if rng:NextNumber()<((s.level or 1)>=3 and .65 or .4) and self.ctx.reachable(s.room,r) and not self.ctx.nearVan(self.ctx.center(r),4) then table.insert(rooms,r)end
+     for _,link in self.ctx.adjacency[r.name]or{}do
+      local rr=self.ctx.rooms[link.to]
+      if rr and self.ctx.reachable(s.room,rr) and not self.ctx.nearVan(self.ctx.center(rr),4) then table.insert(rooms,rr)end
+     end
+     local rr=#rooms>0 and rooms[rng:NextInteger(1,#rooms)]
+     if rr and self.ctx.routeTo(s,self.ctx.center(rr),'Patrol')~=false then
+      b.prowl={untilAt=now+25};s.model:SetAttribute('UtilityAction','Prowl');s.model:SetAttribute('Prowling',true);return
+     end
+    end
+   end
    if old~='Patrol' then
     s.points=nil;s.pauseUntil=now+rng:NextNumber(2,6)
     if not calm and not disengaged and #eligible>0 and rng:NextNumber()<.08+.05*s.difficulty then

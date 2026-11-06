@@ -73,8 +73,10 @@ local map=workspace:WaitForChild('Mansion',math.huge)
 while map:GetAttribute('Ready')~=true or map:GetAttribute('RuntimeReady')~=true do map:GetAttributeChangedSignal('RuntimeReady'):Wait() end
 local furniture=map:FindFirstChild('Furniture') or Instance.new('Folder');furniture.Name='Furniture';furniture.Parent=map
 local event=RS:FindFirstChild('CursedEvent') or Instance.new('RemoteEvent');event.Name='CursedEvent';event.Parent=RS
+local hydrateStart=os.clock() -- HydrationSeconds attribute: mesh building cost at server start (join time)
 require(SS:WaitForChild('MoustacheMeshGeometry')).Build(SS.CursedItemKit.Moustache)
 require(SS:WaitForChild('CursedBlenderHydration')).Build()
+SS:SetAttribute('HydrationSeconds',math.floor((os.clock()-hydrateStart)*10)/10)
 local inv: {[Player]: {Model}}={}
 local states: {[any]: any}={}
 local limits={}
@@ -151,12 +153,12 @@ local function publish(p)
  p:SetAttribute('CursedHeldCount',#list);p:SetAttribute('CursedActive',list[1] and list[1].id or nil)
  p:SetAttribute('MagicOrbHeld',has(p,'MagicOrb')~=nil)
  p:SetAttribute('BalloonHeld',has(p,'Balloon')~=nil)
- p:SetAttribute('SprintBlocked',has(p,'Anvil')~=nil or nil)
+ p:SetAttribute('SprintBlocked',(has(p,'Anvil') or has(p,'SnoringSuitcase') or has(p,'PogoSpring'))~=nil or nil)
  p:SetAttribute('QuietSteps',has(p,'Shoes')~=nil)
  event:FireClient(p,'inventory',list,p:GetAttribute('Valuables') or 0)
 end
 local function clearHold(m)
- for _,x in ipairs(m.PrimaryPart:GetChildren()) do if x.Name:sub(1,5)=='Hold_' then x:Destroy() end end
+ if m.PrimaryPart then for _,x in ipairs(m.PrimaryPart:GetChildren()) do if x.Name:sub(1,5)=='Hold_' then x:Destroy() end end end
  m:SetAttribute('HeldBy',nil)
 end
 -- A creature lets go of an item it stole from the cart: it becomes ordinary floor loot again.
@@ -200,12 +202,18 @@ local function attachFace(p,m)
  m:SetAttribute('FaceOwner',p.UserId);m:SetAttribute('HeldBy',p.UserId);m:SetAttribute('MoustacheFallAt',nil);m:SetAttribute('MoustachePullProgress',0);if m:GetAttribute('ItemId')=='Moustache'then p:SetAttribute('MoustacheFace',true)end
 end
 
+-- A held item swung hard and let go keeps its momentum (PC/console have no throw key, owner 2026-10-22);
+-- if it flies into a monster it hurts it exactly like a thrown one.
+local FLING_SPEED,FLING_MAX=12,70 -- swing speed relative to the player (walking alone never flings)
+local watchThrowHit -- set below throwItem
 local detach
 local cleanup
 detach=function(p,m,throw,bypass,dropRay)
  if not m or m:GetAttribute('HeldBy')~=p.UserId then return false end
  if m:GetAttribute('ItemId')=='Coin' and not bypass then say(p,'The coin will not let go. Use near a friend or wash at a sink.');return false end
  local list=inv[p];local index=table.find(list,m);if index then table.remove(list,index) end
+ -- Bug hunt 2026-10-28: an item destroyed while held (eaten, sold, level cleared) has no parts left: just forget it.
+ if not m.Parent or not m.PrimaryPart then m:SetAttribute('HeldBy',nil);publish(p);return true end
  if Batch.ReleaseHold(p,m)then publish(p);return true end
  if (m:GetAttribute('ItemId')=='Moustache'or m:GetAttribute('ItemId')=='CoolSunglasses') and states[m].faceOwner==p then
   local s=states[m];clearHold(m);s.pullStart=nil;s.fallAt=os.clock()+5
@@ -213,17 +221,22 @@ detach=function(p,m,throw,bypass,dropRay)
   publish(p);return true
  end
  local placement=not throw and dropRay and touchDropPosition and touchDropPosition(p,m,dropRay)
+ local carried=m.PrimaryPart and m.PrimaryPart.AssemblyLinearVelocity or Vector3.zero
+ local walk=root(p) and root(p).AssemblyLinearVelocity or Vector3.zero;local swing=carried-walk
+ local flung=not throw and not placement and swing.Magnitude>=FLING_SPEED
  clearHold(m);parts(m,false,true)
  local r=root(p);if r then
   local look=(states[p] and states[p].look) or r.CFrame.LookVector
-  local st=states[m];local goal=not placement and not throw and st and st.holdGoal
+  local st=states[m];local goal=not placement and not throw and not flung and st and st.holdGoal
   if goal and (goal-r.Position).Magnitude<=HOLD_SNAP_DISTANCE then m:PivotTo(CFrame.new(goal)*m.PrimaryPart.CFrame.Rotation);m.PrimaryPart.AssemblyLinearVelocity=Vector3.zero end
   if st then st.holdGoal=nil end
   if (m.PrimaryPart.Position-r.Position).Magnitude>HOLD_SNAP_DISTANCE then m:PivotTo(r.CFrame*CFrame.new(0,0,-3)) end
   if placement then m:PivotTo(placement);st.safeDropFrame=placement end
-  m.PrimaryPart.AssemblyLinearVelocity=placement and Vector3.zero or throw and look*55+Vector3.new(0,9,0) or Vector3.new(0,-1,0)
+  if flung then for _,part in m:GetDescendants()do if part:IsA('BasePart')and not part.Anchored then pcall(function()part:SetNetworkOwner(nil)end)end end end
+  m.PrimaryPart.AssemblyLinearVelocity=placement and Vector3.zero or throw and look*55+Vector3.new(0,9,0) or flung and walk+swing.Unit*math.clamp(swing.Magnitude*2.4,30,FLING_MAX)+Vector3.new(0,6,0) or Vector3.new(0,-1,0)
+  if flung then m:SetAttribute('ThrownBy',p.UserId);if watchThrowHit then watchThrowHit(p,m,m.PrimaryPart)end end
   m.PrimaryPart.AssemblyAngularVelocity=throw and Vector3.new(2,4,1) or Vector3.zero
-  noise(m.PrimaryPart.Position,throw and 55 or 16,throw and 'thrown item' or 'item set down',m)
+  noise(m.PrimaryPart.Position,(throw or flung) and 55 or 16,(throw or flung) and 'thrown item' or 'item set down',m)
  end
  local s=states[m];s.lastOwner=p;s.restSince=os.clock();s.wind=s.wind or 0
  if m:GetAttribute('ItemId')=='Clock'then s.clockImpact=os.clock();s.impactVelocity=math.max(0,-m.PrimaryPart.AssemblyLinearVelocity.Y);s.lastPos=m.PrimaryPart.Position end
@@ -231,6 +244,59 @@ detach=function(p,m,throw,bypass,dropRay)
  if m:GetAttribute('ItemId')=='Portrait' then say(p,'Portrait: "Butterfingers. That was expensive."');event:FireAllClients('speech',m.PrimaryPart.Position,'Butterfingers. That was expensive.') end
  if m:GetAttribute('ItemId')=='Backpack' and #list>2 then for i=#list,3,-1 do detach(p,list[i],false,true) end end
  publish(p);return true
+end
+-- Throwing at monsters (2026-10-22): an item that hits a monster before it touches anything else takes 20% of the monster's
+-- health (GearShopServer MonsterThrowApi). The first hit halves the item's value, a second hit breaks it.
+local THROW_SPEED,THROW_LIFT=60,15 -- about 15 studs on a level throw (was 85/18: way too far)
+local function throwItem(p,m)
+ if not m or m:GetAttribute('Gear') or m:GetAttribute('HeldBy')~=p.UserId then return false end
+ local r=root(p);if not r then return false end
+ local look=(states[p] and states[p].look) or r.CFrame.LookVector
+ if not detach(p,m,true,false) then return false end
+ local body=m.PrimaryPart;if not body then return true end
+ -- The server flies it: a held item belongs to the thrower's device, which would otherwise keep its own velocity.
+ for _,part in m:GetDescendants()do if part:IsA('BasePart')and not part.Anchored then pcall(function()part:SetNetworkOwner(nil)end)end end
+ body.AssemblyLinearVelocity=look*THROW_SPEED+Vector3.new(0,THROW_LIFT,0)
+ m:SetAttribute('ThrownBy',p.UserId)
+ event:FireAllClients('thrown',m,p)
+ watchThrowHit(p,m,body)
+ return true
+end
+-- Watches a flying item: the first monster it reaches before touching anything else is hit (throw button or a hard fling).
+watchThrowHit=function(p,m,body)
+ task.spawn(function()
+  local t0=os.clock();local lastV=body.AssemblyLinearVelocity
+  task.wait(.05)
+  while m.Parent and body.Parent and os.clock()-t0<2.5 do
+   local v=body.AssemblyLinearVelocity
+   if (v-lastV).Magnitude>30 or v.Magnitude<6 then break end -- it hit something else first (floor, wall, furniture)
+   lastV=v
+   local folder=workspace:FindFirstChild('RoamingCreatures')
+   for _,monster in folder and folder:GetChildren() or {} do
+    local field=monster:FindFirstChild('CorruptionField')
+    if field then
+     local rel=field.CFrame:PointToObjectSpace(body.Position);local half=field.Size/2+Vector3.new(1.3,1.3,1.3)
+     if math.abs(rel.X)<half.X and math.abs(rel.Y)<half.Y and math.abs(rel.Z)<half.Z then
+      local api=SS:FindFirstChild('MonsterThrowApi');local result
+      if api then local ok,res=pcall(function()return api:Invoke(monster,p)end);result=ok and res or nil end
+      body.AssemblyLinearVelocity=-v.Unit*12+Vector3.new(0,14,0)
+      local hits=(m:GetAttribute('ThrowHits')or 0)+1;m:SetAttribute('ThrowHits',hits)
+      noise(body.Position,40,'thrown item',m)
+      if hits>=2 then
+       say(p,result=='killed' and 'Monster destroyed! Your item broke.' or 'Direct hit! The item broke apart.')
+       event:FireAllClients('itemBreak',body.Position)
+       states[m]=nil;m:Destroy()
+      else
+       local half2=math.floor((m:GetAttribute('Value')or 0)/2);m:SetAttribute('Value',half2);m:SetAttribute('LootValue',half2)
+       say(p,result=='killed' and 'Monster destroyed! The item lost half its value.' or ('Direct hit! The item lost half its value ($'..half2..').'))
+      end
+      return
+     end
+    end
+   end
+   task.wait()
+  end
+ end)
 end
 -- Restore the same grab after its temporary wear/use animation; do not replay Pickup.
 local function restoreHold(m,p)
@@ -242,6 +308,22 @@ local function restoreHold(m,p)
  spring(m);publish(p);return true
 end
 Batch.Configure(detach,clearHold,parts,restoreHold)
+-- Omen walk-speed scale (RecoveryRound.Omen, Monsters build 2026-10-27), folded into CursedSpeedMultiplier by the 4 Hz
+-- loop: TEENY TINY short legs (only once the body is shrunk); RUSH HOUR while you push the cart, capped so a boosted
+-- sprint stays under 42 studs/s (cart client follow speed 55, server sanity cap 60).
+local function omenSpeed(p)
+ local rr=RS:FindFirstChild('RecoveryRound');local o=rr and rr:GetAttribute('Omen')
+ if o=='Shrunk'then return p:GetAttribute('OmenShrunk')and .85 or 1 end
+ if o=='RushHour'and rr:GetAttribute('Phase')~='Won'then
+  local mansion=workspace:FindFirstChild('Mansion');local f=mansion and mansion:FindFirstChild('Interactive')
+  local cart=f and f:FindFirstChild('RecoveryCart')
+  if cart and cart:GetAttribute('Kind')=='cart'and cart:GetAttribute('HeldBy')==p.UserId then
+   local sprint=(p:GetAttribute('UpgradeSprintSpeed')or 21.5)*((p:GetAttribute('CandyBoostUntil')or 0)>workspace:GetServerTimeNow()and 1.35 or 1)
+   return math.min(1.45,42/sprint)
+  end
+ end
+ return 1
+end
 local function questItem(p,m,hook)
  if not m or m:GetAttribute('Gear') or m:GetAttribute('LobbyToy') or m:GetAttribute('AdminEffect') or m:GetAttribute('AdminSpawned') then return end
  local ctx=questContext(nil,m);local spawnId=m:GetAttribute('LootSpawnIdentity');local guid=m:GetAttribute('LootGUID');if spawnId and ctx.runId and ctx.round then guid=tostring(ctx.runId)..':'..tostring(ctx.round)..':'..spawnId;m:SetAttribute('LootGUID',guid)end;if not guid then return end
@@ -271,7 +353,7 @@ local function pickup(p,m)
  local head=p.Character and p.Character:FindFirstChild('Head');local origin=head and head.Position or r.Position
  local hit=workspace:Raycast(origin,m.PrimaryPart.Position-origin,params)
  if hit and not hit.Instance:IsDescendantOf(m) and hit.Distance+.8<(origin-m.PrimaryPart.Position).Magnitude then return false end
- inv[p]=inv[p] or {};local cap=has(p,'Backpack') and 4 or 2
+ inv[p]=inv[p] or {};for i=#inv[p],1,-1 do if not inv[p][i].Parent then table.remove(inv[p],i) end end;local cap=has(p,'Backpack') and 4 or 2
  if #inv[p]>=cap or p:GetAttribute('BothHandsBusy') then say(p,'Your hands are full.');return false end
  if m:GetAttribute('ItemId')=='Jawbone' and m:GetAttribute('Quiet') and #inv[p]>0 then return false end
  if m:GetAttribute('AttachedTo') and not Batch.RemoveAttached(p,m)then return false end
@@ -290,6 +372,7 @@ local function pickup(p,m)
  end)
  return true
 end
+local puzzleGive -- puzzle pieces + toy chest toys (PuzzleBatch, InteractServer useChest); set after Choices.Init, which owns giveItem
 local api=Instance.new('BindableFunction');api.Name='CursedItemApi';api.OnInvoke=function(action,p,m,dropRay)
  if action=='lobbyRegister'then return registerLobby and registerLobby(m)
  elseif action=='lobbyRemove'then return removeLobby and removeLobby(m)
@@ -312,6 +395,35 @@ local api=Instance.new('BindableFunction');api.Name='CursedItemApi';api.OnInvoke
    else detach(p,item,false,true,dropRay) end
   end
   return true
+ elseif action=='chute' then
+  -- Laundry chute (InteractServer useChute; World/LaundryChute): out of the hand, hidden and anchored under the floor while it
+  -- falls, then out of the bottom hatch as ordinary floor loot, yelling WHEEE, with a landing noise. dropRay = {hide, out, delay}.
+  local route=dropRay
+  if typeof(m)~='Instance' or not m:IsA('Model') or not states[m] or not m.PrimaryPart or m:GetAttribute('HeldBy')~=p.UserId or type(route)~='table' or typeof(route.hide)~='CFrame' or typeof(route.out)~='CFrame' then return false end
+  local item: Model=m
+  if (item:GetAttribute('GluedUntil') or 0)>os.clock() or item:GetAttribute('FaceOwner') or item:GetAttribute('AttachedTo') or item:GetAttribute('Gear') then return false end
+  if not detach(p,item,false,true) or item:GetAttribute('HeldBy')~=nil then return false end
+  parts(item,true,false);item:PivotTo(route.hide);item:SetAttribute('InChute',true)
+  local token=os.clock();states[item].chuteToken=token
+  task.delay(math.clamp(tonumber(route.delay) or 2,.5,5),function()
+   local s=states[item];local body=item.PrimaryPart
+   if not item.Parent or not body or not s or s.chuteToken~=token then return end
+   s.chuteToken=nil;item:SetAttribute('InChute',nil)
+   item:PivotTo(route.out);parts(item,false,true)
+   body.AssemblyLinearVelocity=route.out.LookVector*6;body.AssemblyAngularVelocity=Vector3.new(0,0,3)
+   s.restSince=os.clock();s.lastPos=body.Position;s.safeDropFrame=route.out
+   noise(body.Position,70,'laundry chute',item) -- MonsterEvidence loudness 50 at the exit
+   event:FireAllClients('speech',body.Position,'WHEEEEE!')
+  end)
+  return true
+ elseif action=='worldGift' then
+  -- WallSafe (InteractServer openSafe; WorldB): one sellable item from this level's list on the floor near m (a Vector3), worth dropRay.
+  if not puzzleGive or typeof(m)~='Vector3' or type(dropRay)~='number' then return nil end
+  return puzzleGive(nil,m,math.clamp(math.floor(dropRay),1,1000),'SafeGift')
+ elseif action=='puzzleGift' then
+  -- SlothToyChest (InteractServer useChest): one FIXED item id on the floor near m.base, worth m.value. m is a table.
+  if not puzzleGive or type(m)~='table' or typeof(m.base)~='Vector3' or type(m.id)~='string' or type(m.value)~='number' then return nil end
+  return puzzleGive(m.id,m.base,math.clamp(math.floor(m.value),1,1000),type(m.tag)=='string' and m.tag or 'PuzzleGift')
  elseif action=='reset' then cleanup(p);return true
  elseif action=='dropAll' then for _,x in ipairs(table.clone(inv[p] or {})) do detach(p,x,false,true) end
  elseif action=='guard' then
@@ -407,6 +519,7 @@ performUse=function(p,m,alternate)
    for _,part in ipairs(follower:GetDescendants()) do if part:IsA('BasePart') then part.Anchored=true;part.CanCollide=false;part.CanTouch=false;part.CanQuery=false;part.Color=(part.Name=='Clown__2' or part.Name=='Clown__3') and Color3.fromRGB(195,181,141) or Color3.fromRGB(18,14,22) end end
    follower:PivotTo(m:GetPivot());follower.Parent=map;s.follower=follower;Debris:AddItem(follower,30)
   end
+ elseif (id=='PeekabooSock' or id=='DustBunnyBot') and Batch.AdoptCompanion and Batch.AdoptCompanion(p,m) then detach(p,m,false,true);m:SetAttribute('Spent',true);m:Destroy();states[m]=nil
  elseif id=='Cake' then valuable(p,math.max(1,math.floor(C.Items.Cake.value*(1-(s.meter or 0)/100))));detach(p,m,false,true);m:SetAttribute('Spent',true);m:Destroy();states[m]=nil;say(p,'Cake value collected.')
  elseif id=='Crown' or id=='Keyring' then
   local d=closestDoor(p);local charges=s.charges or (id=='Keyring' and 3 or 1)
@@ -422,6 +535,13 @@ performUse=function(p,m,alternate)
  elseif id=='Telephone' then Audio.Play('TelephoneRing',m);
   local keys={};for _,k in ipairs(map.Interactive:GetChildren()) do if k:GetAttribute('Kind')=='key' then table.insert(keys,k) end end
   local fake=rng:NextNumber()<.25;local key=#keys>0 and keys[rng:NextInteger(1,#keys)];local room=key and (key:GetAttribute('Room') or '') or '';local actual=roomTypes[room];local level=actual and tostring(actual.level);local roomType=actual and actual.type;local location=roomType and ((level=='1' and 'an upstairs ' or 'a downstairs ')..roomType:gsub('(%l)(%u)','%1 %2'):lower()) or 'one of the rooms';local text=key and ('A key waits in '..location..'.') or 'The keys have already been taken.'
+  -- Puzzle clue (World/CatShelf etc.): every other call names the room of an unsolved puzzle's missing piece instead.
+  local clue=Batch.PuzzleClue and Batch.PuzzleClue();s.callTurn=(s.callTurn or 0)+1
+  if clue and (s.callTurn%2==0 or not key) then
+   local r=roomTypes[clue.room];local t=r and r.type
+   local where=t and ((tostring(r.level)=='1' and 'an upstairs ' or 'a downstairs ')..t:gsub('(%l)(%u)','%1 %2'):lower()) or 'one of the rooms'
+   text=clue.noun..' waits in '..where..'.'
+  end
   if fake then text='D-d-don\'t check the drawers. Follow the footsteps instead.' end;say(p,'Telephone: '..text);event:FireAllClients('speech',m.PrimaryPart.Position,text);s.cooldown=now+15
  elseif id=='Vacuum' then
   local gathered=0;for _,x in ipairs(map.Interactive:GetChildren()) do if x:GetAttribute('ItemId') and x~=m and not x:GetAttribute('HeldBy') and not x:GetAttribute('CargoStored') and not x:GetAttribute('AttachedTo') and not x:GetAttribute('ItemWearOwner') and not x:GetAttribute('FaceOwner') and not x:GetAttribute('MonsterCarried') and x.PrimaryPart and (x.PrimaryPart.Position-r.Position).Magnitude<14 and x.PrimaryPart.Size.Magnitude<3 and visible(r.Position,x.PrimaryPart.Position) then valuable(p,2);x:Destroy();states[x]=nil;gathered+=1 end end
@@ -477,9 +597,15 @@ event.OnServerEvent:Connect(function(p,action,value)
  local m=active(p)
  if action=='sync' then publish(p)
  elseif action=='drop' then if (m and m:GetAttribute('GluedUntil') or 0)>os.clock() then say(p,'It is glued to your hand!') return end detach(p,m,false,nil,value);if m and states[m] and m:GetAttribute('ItemId')=='Clown' and m.Parent==map.Interactive and r then states[m].wind=now+18;states[m].destination=r.Position+r.CFrame.LookVector*18;states[m].owner=p;noise(m.PrimaryPart.Position,55,'wind-up clown',m) end
- -- Throwing was removed from the game; items are only dropped.
+ elseif action=='throw' then
+  if not m then return end
+  if (m:GetAttribute('GluedUntil') or 0)>os.clock() then say(p,'It is glued to your hand!') return end
+  if m:GetAttribute('Gear') then say(p,'Gear is used with E, not thrown.') return end
+  throwItem(p,m)
  elseif action=='use' then if m and m:GetAttribute('Gear') then use(p,m) end;return -- only gear shop items have an E use action
   elseif action=='bank' then say(p,'Put loot in the cart and sell at the van terminal.')
+ -- Stuck co-op item: tell teammates (their CursedCoopClient shows a banner and a marker); one call per 4 s.
+ elseif action=='help' then if (p:GetAttribute('CursedAttach')or '')~='' and now-(gate.help or -10)>=4 then gate.help=now;p:SetAttribute('HelpCallAt',workspace:GetServerTimeNow())end
  elseif action=='swap' and inv[p] and #inv[p]>1 then local moved=table.remove(inv[p],1);if moved then table.insert(inv[p],moved)end;publish(p)
  elseif action=='placedUse' and typeof(value)=='Instance' and value:IsA('Model') and value.PrimaryPart and states[value] and value.Parent==map.Interactive and not value:GetAttribute('HeldBy') and (value.PrimaryPart.Position-r.Position).Magnitude<10 and value:GetAttribute('ItemId')=='Clown' then states[value].wind=now+18;states[value].destination=r.Position+r.CFrame.LookVector*18;states[value].owner=p
  end
@@ -497,6 +623,8 @@ local function register(m)
  local id=m:GetAttribute('ItemId');if not C.Items[id] or not m.PrimaryPart then return end
  stampQuestSpawn(m,id)
  m:SetAttribute('Kind','pickup');m:SetAttribute('DisplayName',C.Items[id].name);m:SetAttribute('Value',rng:NextInteger(math.max(8,math.floor(C.Items[id].value*.7)),math.max(18,math.floor(C.Items[id].value*1.6))));m:SetAttribute('LootValue',m:GetAttribute('Value'))
+ -- Omen 'Valued' (owner 2026-10-26): 35% of the level's loot is worth 1.6x; the client shows VALUED above it.
+ local omenState=RS:FindFirstChild('RecoveryRound');if omenState and omenState:GetAttribute('Omen')=='Valued'and rng:NextNumber()<.35 then m:SetAttribute('Value',math.floor(m:GetAttribute('Value')*1.6));m:SetAttribute('LootValue',m:GetAttribute('Value'));m:SetAttribute('Valued',true)end
  if id=='DiscoBall' then require(script.DiscoBallEffects).Register(m) end
  parts(m,true,false)
  states[m]={birth=os.clock(),bite=os.clock()+30,ring=os.clock()+rng:NextNumber(12,45),arm=0,meter=0,lastNoise=0,charges=id=='Keyring' and 3 or 1,origin=m:GetPivot(),lastPos=m.PrimaryPart.Position}
@@ -570,6 +698,19 @@ adminApi.OnInvoke=function(action,p,a,b)
  return false,'Unknown item action.'
 end
 adminApi.Parent=SS
+-- Paired items (ItemBatch8 TinCanPhone, CursedB 2026-10-27): the second half becomes its own registered loot at the first one.
+do
+ local old=SS:FindFirstChild('SpawnTwinItem');if old then old:Destroy()end
+ local spawnTwin=Instance.new('BindableFunction');spawnTwin.Name='SpawnTwinItem';spawnTwin.Parent=SS
+ spawnTwin.OnInvoke=function(m)
+  if typeof(m)~='Instance'or not m:IsA('Model')or m.Parent~=map.Interactive or not states[m]or not m.PrimaryPart then return nil end
+  local id=m:GetAttribute('ItemId');local template=type(id)=='string'and SS.CursedItemKit:FindFirstChild(id)
+  if not template then return nil end
+  local twin=template:Clone();twin.Name=m.Name..'_Twin';twin:PivotTo(CFrame.new(m:GetPivot().Position+Vector3.new(.9,-.2,0)))
+  twin.Parent=map.Interactive;register(twin)
+  return twin
+ end
+end
 -- Gear shop spawn (live): GearShopServer asks for a registered, grabbable, unsellable gear item.
 do
  local old=SS:FindFirstChild('SpawnGearItem');if old then old:Destroy()end
@@ -658,16 +799,23 @@ for _,m in ipairs(furniture:GetChildren()) do if m.Name:find('_Table') or m.Name
 local searchStart=map:GetAttribute('SpawnPosition') or workspace.SpawnLocation.Position
 local function surfaceRoom(m) return m.PrimaryPart and m.PrimaryPart:GetAttribute('Room') or m.Name end
 local slots={};local used={}
--- Every collectible is eligible in every map and round.
-local function eligibleItems()
+-- Every collectible is eligible in every map and round, except noTutorial items on level 1 (the tutorial level).
+local function eligibleItems(round)
  local list,seen={},{}
  for _,id in ipairs(C.Order)do
   local meta=C.Items[id];local template=SS.CursedItemKit:FindFirstChild(id)
-  if not seen[id]and meta and template and template:IsA('Model')and template.PrimaryPart and (not meta.coop or Batch.CanSpawn(id))then seen[id]=true;table.insert(list,id)end
+  if not seen[id]and meta and not meta.noLoot and not(meta.noTutorial and round==1)and(meta.event==nil or(meta.event=='Halloween'and Batch.HalloweenLive()))and not meta.firstFind and(meta.mapOnly==nil or meta.mapOnly==map:GetAttribute('MapKind'))and template and template:IsA('Model')and template.PrimaryPart and (not meta.coop or Batch.CanSpawn(id))then seen[id]=true;table.insert(list,id)end
  end
  return list
 end
 local eligible=eligibleItems()
+-- Close-up Yes/No props (cat, pup, tea party, fortune teller): rules live in CloseUpChoices; this owner places them with the loot.
+local Choices=require(script:WaitForChild('CloseUpChoices'))
+Choices.Init({map=map,script=script,rng=rng,Audio=Audio,register=register,lootBounds=lootBounds,supported=supportedLootPosition,clear=clearLootPosition,eligible=function()return eligible end})
+-- Dead-air breakers (WorldB 2026-10-27): the level nudges bored searchers toward loot (tattle mouse, wall phone, bulb trail). Level 1-2 only.
+require(script:WaitForChild('DeadAirBreakers')).Init({map=map,Audio=Audio,say=say,event=event})
+puzzleGive=function(id,base,value,tag) return Choices.GiveItem(id,base,value,tag) end
+Batch.PuzzleInit({map=map,give=puzzleGive,say=say,noise=noise,Audio=Audio,script=script,speech=function(pos,text)event:FireAllClients('speech',pos,text)end})
 
 
 -- Each item reserves its own size; the largest are placed first so small items
@@ -706,7 +854,7 @@ local function initialMissionLoot()
   end
   if chosen then break end
  end
- if chosen then if chosenSurface then used[surfaceRoom(chosenSurface)]=true end;local m=template:Clone();m.Name='Cursed_'..id;m:PivotTo(CFrame.new(chosen));m.Parent=map.Interactive;register(m);table.insert(slots,{p=Vector3.new(chosen.X+lootBounds(template).centre.X,chosen.Y+lootBounds(template).bottom-.035,chosen.Z+lootBounds(template).centre.Z),s=size,id=id,surface=chosenSurface}) else warn('[CursedItems] No safe surface for '..id) end
+ if chosen then if chosenSurface then used[surfaceRoom(chosenSurface)]=true end;local m=template:Clone();m.Name='Cursed_'..id;m:PivotTo(CFrame.new(chosen));m.Parent=map.Interactive;register(m);table.insert(slots,{p=Vector3.new(chosen.X+lootBounds(template).centre.X,chosen.Y+lootBounds(template).bottom-.035,chosen.Z+lootBounds(template).centre.Z),s=size,id=id,surface=chosenSurface}) else map:SetAttribute('CursedItemsSkipped',(map:GetAttribute('CursedItemsSkipped') or 0)+1) end -- out of free tabletops: counted, not warned (it flooded the live error report)
 end end
 map:SetAttribute('LootRequested',#placeOrder);map:SetAttribute('LootPlaced',#slots)
 map:SetAttribute('LootReady',true)
@@ -747,7 +895,9 @@ local function restock(round,quota)
  table.clear(questSpawnOrdinals)
  initialMissionLoot()
  Batch.ClearLevel()
- eligible=eligibleItems()
+ Choices.ClearLevel()
+ require(script.DeadAirBreakers).ClearLevel() -- dead-air breakers: props, hints, budgets
+ eligible=eligibleItems(round)
  if #eligible==0 then map:SetAttribute('AvailableLootValue',0);return 0 end
  for _,p in Players:GetPlayers()do p:SetAttribute('MoustacheFace',nil)end
  for _,p in ipairs(Players:GetPlayers()) do for _,m in ipairs(table.clone(inv[p] or {})) do detach(p,m,false,true) end end
@@ -765,7 +915,11 @@ local function restock(round,quota)
   local best,len=1,0;for room,b in bandByRoom do if #room>len and name:sub(1,#room)==room then best,len=b,#room end end -- furniture is named <room>_<piece>
   return best
  end
- local want={math.ceil(plan.count*.5),math.ceil(plan.count*.25),0};want[3]=math.max(0,plan.count-want[1]-want[2])
+ -- From round 3 the near-spawn share drops by a quarter (50% -> 37.5%) so players have to go deeper.
+ local nearShare=if round>=3 then .375 else .5;local midShare=if round>=3 then .3125 else .25
+ local want={math.ceil(plan.count*nearShare),math.ceil(plan.count*midShare),0};want[3]=math.max(0,plan.count-want[1]-want[2])
+ -- Level 7+: move about25% of the existing near-band count deeper; total count/value stay unchanged.
+ if round>=7 then local shifted=math.floor(want[1]*.25+.5);want[1]-=shifted;local middle=math.floor(shifted/2);want[2]+=middle;want[3]+=shifted-middle end
  local have,bands,tries={0,0,0},{},{0,0,0}
  local onSurface={} -- at most one item per table/desk/counter per level, so loot never piles up on one surface
  local bag=shuffledLootBag(eligible);local selected={}
@@ -782,10 +936,23 @@ local function restock(round,quota)
   end
   return true
  end
+ -- Per-room cap across every placement pass: 3 at most, and the third one only sometimes, so a single room
+ -- never holds a big haul. Furniture is named <room>_<piece>, so it counts toward its room.
+ local ROOM_MAX,THIRD_ITEM_CHANCE=3,.35
+ local roomCount={}
+ local function roomKey(name)
+  if not name or bandByRoom[name] then return name end
+  local best,len=name,0;for room in bandByRoom do if #room>len and name:sub(1,#room)==room then best,len=room,#room end end
+  return best
+ end
+ local function roomFull(name)
+  local n=roomCount[roomKey(name) or '']or 0
+  return n>=ROOM_MAX or n==ROOM_MAX-1 and rng:NextNumber()>THIRD_ITEM_CHANCE
+ end
  local function place(id,pos,room)
   local template=SS.CursedItemKit[id];local b=lootBounds(template)
   local m=template:Clone();m.Name='Loot_'..round..'_'..(#placed+1);m:PivotTo(CFrame.new(pos));m.Parent=map.Interactive;register(m)
-  if room then m:SetAttribute('Room',room)end
+  if room then m:SetAttribute('Room',room);local key=roomKey(room);roomCount[key]=(roomCount[key]or 0)+1 end
   placed[#placed+1]=m;boxes[#boxes+1]={c=pos+b.centre,s=b.size};values[#values+1]=Budget.Value(id,plan,rng)
   local band=bandOfName(room);bands[#placed]=band;have[band]+=1
  end
@@ -794,6 +961,7 @@ local function restock(round,quota)
   local slot=slots[i];local id=selected[i];if not id then continue end;local template=SS.CursedItemKit[id]
   if have[bandOfName(slot.surface and surfaceRoom(slot.surface))]>=want[bandOfName(slot.surface and surfaceRoom(slot.surface))] then table.insert(bag,id);continue end
   if slot.surface and onSurface[slot.surface] then table.insert(bag,id);continue end
+  if slot.surface and roomFull(surfaceRoom(slot.surface)) then table.insert(bag,id);continue end
   local pos=supportedLootPosition(template,slot.p.X,slot.p.Z,slot.surface,slot.p.Y+1,slot.p.Y-1,false)
   if not pos or not clearLootPosition(template,pos,slot.surface)or not clearBoxes(id,pos)then table.insert(bag,id);continue end
   place(id,pos,slot.surface and surfaceRoom(slot.surface));if slot.surface then onSurface[slot.surface]=true end
@@ -819,7 +987,7 @@ local function restock(round,quota)
   end
   local pool=if #roomsByBand[need]>0 then roomsByBand[need] else rooms
   local room=pool[rng:NextInteger(1,#pool)]
-  if(perRoom[room.name]or 0)>=16 then continue end
+  if(perRoom[room.name]or 0)>=16 or roomFull(room.name) then continue end
   if #bag==0 then bag=shuffledLootBag(eligible)end
   local id=bag[rng:NextInteger(1,#bag)];local template=SS.CursedItemKit[id];local size=lootBounds(template).size
   local ax,bx=room.x1+math.max(3,size.X*.5+1.2),room.x2-math.max(3,size.X*.5+1.2)
@@ -861,9 +1029,95 @@ local function restock(round,quota)
   end
  end
  -- Capacity is finite; spread any residual shortfall across the actual safe items.
- local total=Budget.Distribute(values,bands,plan.value)
+ local total=Budget.Distribute(values,bands,plan.value,{nearShare,midShare,1-nearShare-midShare})
  map:SetAttribute('LootBandCounts',have[1]..'/'..have[2]..'/'..have[3])
+ -- Level 1 (owner 2026-10-27): every item is worth 25-32% of the quota (25-32 of 100, mean ~28.5), so the first run
+ -- is about 3.5 items. The quota stays 100.
+ if round==1 then total=0;local lo,hi=math.ceil(quota*.25),math.floor(quota*.32);for i in values do values[i]=rng:NextInteger(lo,hi);total+=values[i]end end
  for i,m in placed do m:SetAttribute('Value',values[i]);m:SetAttribute('LootValue',values[i])end
+ -- Level 1 bonus: one extra $45 item in the start room, on top of the budget, so every player gets an early first find.
+ local start=order[1]
+ if round==1 and start and start.x1 then
+  local bonusBest;local bonusFound=0
+  -- First-find item (CursedA 2026-10-27): the start-room bonus is one of the catalog's firstFind items (FoamFinger,
+  -- BobbleBuddy, WobbleJelly; CursedBatchEffects.ItemBatch6), so a new player's first grab is a big, funny, safe one.
+  -- The first 80 tries keep that id; after that any loot id, exactly as before.
+  local firstFinds={}
+  for _,fid in ipairs(C.Order)do
+   local fm=C.Items[fid];local ft=SS.CursedItemKit:FindFirstChild(fid)
+   if fm and fm.firstFind and ft and ft:IsA('Model')and ft.PrimaryPart and not table.find(firstFinds,fid)then table.insert(firstFinds,fid)end
+  end
+  local firstFind=#firstFinds>0 and firstFinds[rng:NextInteger(1,#firstFinds)]or nil
+  for try=1,160 do
+   if #bag==0 then bag=shuffledLootBag(eligible)end
+   local id=(firstFind and try<=80)and firstFind or bag[rng:NextInteger(1,#bag)];local template=SS.CursedItemKit[id];local size=lootBounds(template).size
+   local ax,bx=start.x1+math.max(3,size.X*.5+1.2),start.x2-math.max(3,size.X*.5+1.2)
+   local az,bz=start.z1+math.max(3,size.Z*.5+1.2),start.z2-math.max(3,size.Z*.5+1.2)
+   if bx>=ax and bz>=az then
+    local x,z=rng:NextNumber(ax,bx),rng:NextNumber(az,bz)
+    local pos=supportedLootPosition(template,x,z,map.Collision,(start.level or 0)*16+2,(start.level or 0)*16-2,true)
+    local safe=pos~=nil
+    if safe then for _,point in keepouts do if math.abs(point.Y-(start.level or 0)*16)<8 and Vector3.new(x-point.X,0,z-point.Z).Magnitude<5 then safe=false;break end end end
+    -- The collision floor can sit below visible floor pieces (rugs, the van apron): the visible top must match it too.
+    if safe then
+     local b=lootBounds(template);local vp=RaycastParams.new();vp.FilterType=Enum.RaycastFilterType.Exclude;vp.FilterDescendantsInstances={map.Collision,map.Interactive}
+     for _,off in {Vector3.zero,Vector3.new(-b.size.X*.5,0,-b.size.Z*.5),Vector3.new(b.size.X*.5,0,-b.size.Z*.5),Vector3.new(-b.size.X*.5,0,b.size.Z*.5),Vector3.new(b.size.X*.5,0,b.size.Z*.5)}do
+      local hit=workspace:Raycast(Vector3.new(x+off.X,pos.Y+b.bottom+6,z+off.Z),Vector3.new(0,-8,0),vp)
+      if not hit or math.abs(hit.Position.Y-(pos.Y+b.bottom))>.15 then safe=false;break end
+     end
+     if safe then
+      local op=OverlapParams.new();op.FilterType=Enum.RaycastFilterType.Exclude;op.FilterDescendantsInstances={map.Collision,map.Interactive}
+      for _,hit in workspace:GetPartBoundsInBox(CFrame.new(pos+b.centre+Vector3.new(0,.15,0)),b.size+Vector3.new(2,0,2),op)do if hit.CanCollide or hit.Transparency<1 then safe=false;break end end
+     end
+    end
+    if safe and clearLootPosition(template,pos,nil)and clearBoxes(id,pos)then
+     local sp=map:GetAttribute('SpawnPosition')or searchStart;local d=(Vector3.new(x,0,z)-Vector3.new(sp.X,0,sp.Z)).Magnitude
+     if not bonusBest or d<bonusBest.d then bonusBest={id=id,pos=pos,d=d}end
+     bonusFound+=1;if bonusFound>=12 then break end
+    end
+   end
+  end
+  -- Closest safe spot to where players arrive.
+  if bonusBest then
+   place(bonusBest.id,bonusBest.pos,start.name);consumeLootId(bag,bonusBest.id)
+   -- Level 1 keeps the first item in the five-item range (owner 2026-10-26).
+   local bonusValue=round==1 and math.floor(quota*.32)or 50
+   local m=placed[#placed];m:SetAttribute('Value',bonusValue);m:SetAttribute('LootValue',bonusValue);m:SetAttribute('BonusLoot',true);total+=bonusValue
+  end
+ end
+ -- Rare treasure (CursedA 2026-10-27): fixed rule from LootBudget.Treasure (catalog `treasure` gate), one per level from
+ -- level 3, on the floor of the deepest room from the start room (next deepest if it has no safe spot). Worth is on top of
+ -- the budget, like BonusLoot. Never random, never paid.
+ map:SetAttribute('TreasureId',nil);map:SetAttribute('TreasureRoom',nil);map:SetAttribute('TreasureValue',nil);map:SetAttribute('TreasureSkipped',nil)
+ local treasureId,treasureValue=Budget.Treasure(round,quota,plan,C,SS.CursedItemKit)
+ if treasureId then
+  local deep={}
+  for _,r in order do if (r.depth or -1)>=0 and r.type~='Hall' and r.type~='Stair' and r.type~='Foyer' and r.x1 and r.x2 and r.z1 and r.z2 then deep[#deep+1]=r end end
+  table.sort(deep,function(a,b)if a.depth~=b.depth then return a.depth>b.depth end;return (a.x2-a.x1)*(a.z2-a.z1)>(b.x2-b.x1)*(b.z2-b.z1)end)
+  local template=SS.CursedItemKit[treasureId];local size=lootBounds(template).size;local done=false
+  for index=1,math.min(4,#deep) do
+   local room=deep[index]
+   local ax,bx=room.x1+math.max(3,size.X*.5+1.2),room.x2-math.max(3,size.X*.5+1.2)
+   local az,bz=room.z1+math.max(3,size.Z*.5+1.2),room.z2-math.max(3,size.Z*.5+1.2)
+   if bx>=ax and bz>=az then for _=1,80 do
+    local x,z=rng:NextNumber(ax,bx),rng:NextNumber(az,bz)
+    local pos=supportedLootPosition(template,x,z,map.Collision,(room.level or 0)*16+2,(room.level or 0)*16-2,true)
+    local safe=pos~=nil
+    if safe then for _,point in keepouts do if math.abs(point.Y-(room.level or 0)*16)<8 and Vector3.new(x-point.X,0,z-point.Z).Magnitude<5 then safe=false;break end end end
+    if safe and clearLootPosition(template,pos,nil) and clearBoxes(treasureId,pos) then
+     place(treasureId,pos,room.name)
+     local m=placed[#placed]
+     m:SetAttribute('Valued',nil);m:SetAttribute('Value',treasureValue);m:SetAttribute('LootValue',treasureValue);m:SetAttribute('Treasure',true);total+=treasureValue
+     map:SetAttribute('TreasureId',treasureId);map:SetAttribute('TreasureRoom',room.name);map:SetAttribute('TreasureValue',treasureValue)
+     done=true;break
+    end
+   end end
+   if done then break end
+  end
+  if not done then map:SetAttribute('TreasureSkipped',treasureId) end
+ end
+ Choices.Restock(round,quota,placed)
+ Batch.PuzzleRestock(round) -- prune puzzle props below their level gate, spawn cats (fixed values, on top of the budget)
  map:SetAttribute('LootRequested',plan.count);map:SetAttribute('LootPlaced',#placed)
  map:SetAttribute('LootTargetValue',plan.value);map:SetAttribute('LootTargetRatio',plan.ratio)
  map:SetAttribute('AvailableLootValue',total)
@@ -871,7 +1125,32 @@ local function restock(round,quota)
  return total
 end
 
-local stock=Instance.new('BindableFunction');stock.Name='RecoveryLootApi';stock.OnInvoke=function(action,a,b) if action=='restock' then return restock(a,b) elseif action=='remove' and states[a] and not a:GetAttribute('HeldBy') and not a:GetAttribute('ItemWearOwner') and not a:GetAttribute('AttachedTo')then states[a]=nil;a:Destroy();return true end return false end;stock.Parent=SS
+-- Omen props (RecoveryRoundServer, THE CUCKOO; Monsters build 2026-10-27): swap one placed loot item for the omen's
+-- prop, on the same surface. The item at 60% of the distance ranking from spawn: away from the van, never the far corner.
+local function omenProp(id)
+ local entry=C.Items[id];local template=SS.CursedItemKit:FindFirstChild(id);local folder=map:FindFirstChild('Interactive')
+ if not entry or not template or not folder then return nil end
+ local from=map:GetAttribute('SpawnPosition')or workspace.SpawnLocation.Position
+ local list={}
+ for _,m in ipairs(folder:GetChildren())do
+  if states[m]and m.Name:sub(1,5)=='Loot_'and m.PrimaryPart and not m:GetAttribute('HeldBy')and not m:GetAttribute('Valued')then table.insert(list,m)end
+ end
+ if #list==0 then return nil end
+ table.sort(list,function(a,b)return(a.PrimaryPart.Position-from).Magnitude<(b.PrimaryPart.Position-from).Magnitude end)
+ local old=list[math.clamp(math.ceil(#list*.6),1,#list)]
+ local oldTemplate=SS.CursedItemKit:FindFirstChild(old:GetAttribute('ItemId')or'')
+ local at=old:GetPivot().Position;local surfaceY=at.Y+(oldTemplate and lootBounds(oldTemplate).bottom or 0)
+ local room=old:GetAttribute('Room')
+ states[old]=nil;old:Destroy()
+ local m=template:Clone();m.Name='Omen_'..id
+ m:PivotTo(CFrame.new(at.X,surfaceY-lootBounds(template).bottom+.05,at.Z));m.Parent=folder;register(m)
+ local rr=RS:FindFirstChild('RecoveryRound');local level=rr and rr:GetAttribute('Round')or 1
+ local value=math.floor(entry.value*(1+.12*(level-1)))
+ m:SetAttribute('Value',value);m:SetAttribute('LootValue',value)
+ if room then m:SetAttribute('Room',room)end
+ return room
+end
+local stock=Instance.new('BindableFunction');stock.Name='RecoveryLootApi';stock.OnInvoke=function(action,a,b) if action=='restock' then return restock(a,b) elseif action=='omenProp' then return omenProp(a) elseif action=='remove' and states[a] and not a:GetAttribute('HeldBy') and not a:GetAttribute('ItemWearOwner') and not a:GetAttribute('AttachedTo')then states[a]=nil;a:Destroy();return true end return false end;stock.Parent=SS
 -- Secrets are optional rewards, never routes required to complete the map.
 -- Plaques sit on the room's north wall near its west corner; slide along the wall past any diagonal corner cut.
 local AngledCorners=require(game:GetService('ServerScriptService').MapGen:WaitForChild('AngledCorners'))
@@ -937,7 +1216,7 @@ Run.Heartbeat:Connect(function(dt)
    -- Holding a cursed item near water washes it clean (checked twice a second).
    do local st=states[m];if not m:GetAttribute('LobbyToy') and st and now>=(st.waterCheck or 0)then st.waterCheck=now+.5;if now>=(st.washedUntil or 0)and nearWater(p)then use(p,m,true)end end end
    local head=p.Character:FindFirstChild('Head');local camera=states[p] and states[p].camera or CFrame.lookAt(head and head.Position or r.Position+Vector3.new(0,1,0),(head and head.Position or r.Position+Vector3.new(0,1,0))+look)
-   local pose=p:GetAttribute('TouchCarry') and HoldPose.Item(camera,HoldPose.LeftGrip(camera),m) or camera*CFrame.new(0,-.35,-(p:GetAttribute('HoldDistance')or 6));if m:GetAttribute('ItemId')=='Mirror' and not p:GetAttribute('TouchCarry') then pose=camera*CFrame.new(0,.55,-(p:GetAttribute('HoldDistance')or 4.8))*CFrame.Angles(0,math.pi,0) end;if m:GetAttribute('ItemId')=='FearMirror' and not p:GetAttribute('TouchCarry') then pose=camera*CFrame.new(0,-.45,-2.6)*CFrame.Angles(0,math.pi,0) end;local goal=i==1 and pose.Position or r.Position-r.CFrame.RightVector*1.4+Vector3.new(0,-.3,0)
+   local pose=p:GetAttribute('TouchCarry') and HoldPose.Item(camera,HoldPose.LeftGrip(camera),m) or camera*CFrame.new(0,-.35,-(p:GetAttribute('HoldDistance')or 6));if m:GetAttribute('ItemId')=='Mirror' and not p:GetAttribute('TouchCarry') then pose=camera*CFrame.new(0,.55,-(p:GetAttribute('HoldDistance')or 4.8))*CFrame.Angles(0,math.pi,0) end;if m:GetAttribute('ItemId')=='FearMirror' and not p:GetAttribute('TouchCarry') then pose=camera*CFrame.new(0,-.45,-2.6)*CFrame.Angles(0,math.pi,0) end;if m:GetAttribute('ItemId')=='BackwardsHairdryer'then pose=pose*CFrame.Angles(0,math.pi,0)end;local goal=i==1 and pose.Position or r.Position-r.CFrame.RightVector*1.4+Vector3.new(0,-.3,0)
    if m:GetAttribute('ItemId')=='Balloon'then pose=CFrame.new(r.Position+Vector3.new(0,4.5,0))*r.CFrame.Rotation;goal=pose.Position end
    local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Include;local blockers={m:GetAttribute('LobbyToy') and workspace.LobbyWorld or map.Collision};local camp=workspace:FindFirstChild('RecoveryCamp');if camp and not m:GetAttribute('LobbyToy')then table.insert(blockers,camp)end;for _,door in ipairs(map.Interactive:GetChildren())do if door:GetAttribute('Kind')=='door'then table.insert(blockers,door)end end;params.FilterDescendantsInstances=blockers;params.RespectCanCollide=true
    local hit=workspace:Raycast(r.Position+Vector3.new(0,1,0),goal-r.Position-Vector3.new(0,1,0),params)
@@ -952,7 +1231,7 @@ Run.Heartbeat:Connect(function(dt)
   end end
  end
  accumulator+=dt;if accumulator<.25 then return end;local tick=accumulator;accumulator=0
- if missionRunning() and now>=nextPulse then nextPulse=now+65;map:SetAttribute('NextDangerPulse',workspace:GetServerTimeNow()+65);for _,n in ipairs(monsters()) do n:SetAttribute('AgitatedUntil',now+12) end;for _,piano in ipairs(pianos) do piano:SetAttribute('PlayingUntil',now+10);local song=piano:FindFirstChild('HauntedPianoSong',true);if song and not song.IsPlaying then song.SoundId=song:GetAttribute('FirstTrack');song.TimePosition=0;song:Play() end end;if #pianos==0 then fallbackMusicUntil=now+10 end end
+ if missionRunning() and now>=nextPulse then nextPulse=now+65;map:SetAttribute('NextDangerPulse',workspace:GetServerTimeNow()+65);for _,n in ipairs(monsters()) do n:SetAttribute('AgitatedUntil',now+12) end;for _,piano in ipairs(pianos) do piano:SetAttribute('PlayingUntil',now+10);local song=piano:FindFirstChild('HauntedPianoSong',true);if song and not song.IsPlaying then song.SoundId=song:GetAttribute('Track') or song.SoundId;song.TimePosition=0;song:Play() end end;if #pianos==0 then fallbackMusicUntil=now+10 end end
  for _,piano in ipairs(pianos) do if missionRunning() and now<(piano:GetAttribute('PlayingUntil') or 0) and now-(piano:GetAttribute('LastNoteAt') or 0)>2 then piano:SetAttribute('LastNoteAt',now);noise(piano:GetPivot().Position,12,'haunted piano music',piano) end end
  for m,s in pairs(states) do if typeof(m)=='Instance' and m:IsA('Model') then
   if not m.Parent then states[m]=nil;continue end
@@ -1062,7 +1341,8 @@ Run.Heartbeat:Connect(function(dt)
   p:SetAttribute('TeddyObscure',has(p,'Teddy') and states[has(p,'Teddy')].arm or 0)
   p:SetAttribute('BothHandsBusy',has(p,'Jawbone') and has(p,'Jawbone'):GetAttribute('Quiet') or false)
   for _,n in ipairs({'CursedLift','CursedLiftAttachment'}) do local v=r:FindFirstChild(n);if v then v:Destroy() end end
-  local boost=(p:GetAttribute('CandyBoostUntil') or 0)>now;p:SetAttribute('CursedSpeedMultiplier',(boost and 1.35 or 1)*(has(p,'SnailShell') and .6 or 1)*(has(p,'Anvil') and .45 or 1))
+  local omenState=RS:FindFirstChild('RecoveryRound');local adrenaline=omenState~=nil and omenState:GetAttribute('Omen')=='Adrenaline'and(p:GetAttribute('ChasedUntil')or 0)>workspace:GetServerTimeNow() -- omen: chased = the candy rush
+  local boost=(p:GetAttribute('CandyBoostUntil') or 0)>now or adrenaline;p:SetAttribute('AdrenalineActive',adrenaline or nil);p:SetAttribute('CursedSpeedMultiplier',(boost and 1.35 or 1)*(has(p,'SnailShell') and .6 or 1)*(has(p,'Anvil') and .45 or 1)*((has(p,'HideyBox')and has(p,'HideyBox'):GetAttribute('HideyWornBy')==p.UserId)and .6 or 1)*(p:GetAttribute('CoopSpeedScale') or 1)*Choices.SpeedScale(p)*omenSpeed(p)*((p:GetAttribute('WadingUntil')or 0)>workspace:GetServerTimeNow() and .7 or 1))
   if (p:GetAttribute('ChatteringUntil') or 0)>now and now-((states[p] or {}).chatter or 0)>4 then states[p]=states[p] or {};states[p].chatter=now;noise(r.Position,85,'teeth chattering',nil,lobbyPlayer(p)) end
  end
 end)
@@ -1134,9 +1414,10 @@ local function makeEventDrop(folder,template,cf,action,index,runId,round)
   if QuestService.Record(p,action,1,ctx)then taken[p.UserId]=true;if action=='PumpkinCarved' then local face=m:FindFirstChild('Face',true);if face and face:IsA('BasePart')then face.Transparency=0 end end end
  end)
 end
+Batch.HalloweenInit({map=map,furniture=furniture,searchStart=searchStart,missionRunning=missionRunning,script=script,speech=function(pos,text)event:FireAllClients('speech',pos,text)end}) -- World/BrewCauldron (WorldA)
 refreshQuestEventWorld=function()
  questEventGeneration+=1
- local old=map:FindFirstChild('QuestHalloweenDrops');if old then old:Destroy()end
+ local old=map:FindFirstChild('QuestHalloweenDrops');if old then old:Destroy()end;Batch.HalloweenPlace() -- brew cauldron, before the quest-drop early return
  if not eventLive() or not missionRunning()then return end
  local state=RS:FindFirstChild('RecoveryRound');local runId=state and state:GetAttribute('QuestRunId');local round=state and state:GetAttribute('Round')
  if type(runId)~='string' or type(round)~='number' or round<1 then return end

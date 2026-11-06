@@ -74,16 +74,16 @@ local function layout()
  local mode=platform()
  controls.Text=mode=='pad'and 'D-pad to choose • A to grant • B to close'
   or mode=='touch'and 'Tap a player, then tap a pass to grant access'
-  or 'Click a player, then a pass • F8 opens/closes'
+  or 'Click a player, then a pass • P opens/closes'
 end
 local function setOpen(value)
- if value and not authorized()then return end
+ if value and not owner()then return end -- owner only (2026-10-25)
  panel.Visible=value;closeButton.Modal=value;p:SetAttribute('AdminPassPanelOpen',value)
  if value then UIS.MouseBehavior=Enum.MouseBehavior.Default end
  if value then previousFocus=GS.SelectedObject;layout();request('list');if platform()=='pad'then GS.SelectedObject=refreshButton end
  else if GS.SelectedObject and GS.SelectedObject:IsDescendantOf(panel)then GS.SelectedObject=previousFocus and previousFocus.Parent and previousFocus or openButton end end
 end
-openButton=button(gui,'OpenAdmin','ADMIN',function()setOpen(not panel.Visible)end);openButton.AnchorPoint=Vector2.new(0,1);openButton.Position=UDim2.new(0,12,1,-12);openButton.Size=UDim2.fromOffset(96,44)
+-- No on-screen button (owner 2026-10-25): this panel is the PASSES tab of the owner's P window (AdminPowersClient).
 closeButton=button(panel,'Close','CLOSE',function()setOpen(false)end);closeButton.AnchorPoint=Vector2.new(1,0);closeButton.Position=UDim2.new(1,-12,0,8);closeButton.Size=UDim2.fromOffset(90,44)
 refreshButton=button(panel,'Refresh','REFRESH',function()request('list')end);refreshButton.Position=UDim2.new(1,-110,0,54);refreshButton.Size=UDim2.fromOffset(98,44)
 -- Keep refresh above the lists; the control hint leaves room for this button.
@@ -97,11 +97,19 @@ event.OnClientEvent:Connect(function(id,ok,result)
   render();status.Text=result.message
  end
 end)
-CAS:BindAction('OwnerPassPanel',function(_,state)
- if not authorized()or UIS:GetFocusedTextBox()then return Enum.ContextActionResult.Pass end
- if state==Enum.UserInputState.Begin then setOpen(not panel.Visible)end
- return Enum.ContextActionResult.Sink
-end,false,Enum.KeyCode.F8,Enum.KeyCode.ButtonSelect)
+local api=Instance.new('BindableFunction');api.Name='PassPanelApi';api.Parent=script
+api.OnInvoke=function(action,at,size)
+ if action=='isOpen'then return panel.Visible end
+ if action=='close'then setOpen(false);return true end
+ if action=='open'and owner()then
+  setOpen(true)
+  if typeof(at)=='Vector2'and typeof(size)=='Vector2'then -- sit exactly where the powers window was
+   local o=gui.AbsolutePosition;panel.AnchorPoint=Vector2.zero;panel.Position=UDim2.fromOffset(at.X-o.X,at.Y-o.Y);panel.Size=UDim2.fromOffset(size.X,size.Y)
+  end
+  return true
+ end
+ return false
+end
 CAS:BindActionAtPriority('OwnerPassPanelBack',function(_,state)
  if not panel.Visible then return Enum.ContextActionResult.Pass end
  if state==Enum.UserInputState.Begin then setOpen(false)end
@@ -112,10 +120,10 @@ workspace:GetPropertyChangedSignal('CurrentCamera'):Connect(function()local c=wo
 if workspace.CurrentCamera then workspace.CurrentCamera:GetPropertyChangedSignal('ViewportSize'):Connect(layout)end
 layout()
 
-local tools=button(panel,'PlayerTools','PLAYER TOOLS',function()
- setOpen(false);p.PlayerScripts:WaitForChild('AdminPowersClient'):WaitForChild('OpenTargets'):Fire()
+local tools=button(panel,'PlayerTools','POWERS',function() -- back to the powers tabs of the same window
+ setOpen(false);p.PlayerScripts:WaitForChild('AdminPowersClient'):WaitForChild('OpenPowers'):Fire()
 end)
 tools.Size=UDim2.fromOffset(130,44);tools.Position=UDim2.new(0,12,0,48)
 controls.Position=UDim2.fromOffset(150,50);controls.Size=UDim2.new(1,-162,0,24)
-local function accessChanged()heading.Text=owner()and'OWNER · PASS ACCESS'or'ADMIN · PASS ACCESS (VIEW ONLY)';gui.Enabled=authorized();if not authorized()then setOpen(false)end end
-p:GetAttributeChangedSignal('AdminAuthorized'):Connect(accessChanged);accessChanged()
+local function accessChanged()heading.Text='OWNER · PASS ACCESS';gui.Enabled=owner();if not owner()then setOpen(false)end end
+p:GetAttributeChangedSignal('AdminAuthorized'):Connect(accessChanged);p:GetAttributeChangedSignal('AdminOwner'):Connect(accessChanged);accessChanged()

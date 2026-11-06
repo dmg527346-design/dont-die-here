@@ -6,6 +6,7 @@ local Catalog=require(RS:WaitForChild('QuestCatalog'))
 local Engine=require(script.Parent:WaitForChild('QuestCore')).new(Catalog)
 local EventConfig=require(RS:WaitForChild('EventConfig'))
 local Shop=require(RS:WaitForChild('LobbyShopCatalog'))
+local RankRating=require(script.Parent:WaitForChild('RankRating'))
 local Q={}
 local bridge
 local buffers,locks,pendingOps,nextRemote,nextPush,displayRevs,overrides,fixtures={},{},{},{},{},{},{},{}
@@ -133,6 +134,7 @@ local personal={ItemPickup=true,GrabUse=true,DoorUnlocked=true,SecretFound=true,
 function Q.Record(p,hook,amount,ctx)
  if not bridge or not player(p) or p.Parent~=Players or not allowedHooks[hook] or not finite(amount) or amount<0 or amount%1~=0 or amount>1000000000 then return false end
  ctx=type(ctx)=='table' and table.clone(ctx) or {}
+ if ctx.mapKind=='Mansion' then ctx.mapKind='Manor' end -- MapGen calls it Mansion; the quest catalog and saved quests say Manor
  local fixture=fixtures[p]==true and ctx.fixture==true
  if (p:GetAttribute('RewardTestMode')==true or p:GetAttribute('AdminSimulateNoPasses')==true or p:GetAttribute('QuestTestMode')==true) and not fixture then return false end
  if ctx.admin or ctx.adminSpawned or ctx.AdminProvenance or ctx.test or ctx.instantWin then return false end
@@ -158,6 +160,7 @@ function Q.Record(p,hook,amount,ctx)
  b.seen[id]=true;table.insert(b.seenOrder,id)
  while #b.seenOrder>2048 do b.seen[table.remove(b.seenOrder,1)]=nil end
  table.insert(b.events,{hook=hook,eventId=id,amount=amount,at=now(p),ctx=copied})
+ RankRating.Note(p,hook)
  p:SetAttribute('QuestSaveStatus','Saving')
  if #b.events>=96 then task.spawn(Q.Flush,p)end
  task.defer(function()if bridge.Profile(p)and bridge.Profile(p).Quests then push(p)end end)
@@ -314,7 +317,10 @@ function Q.HasPending(p)local b=buffers[p];return pendingOps[p]~=nil or pendingL
 function Q.Reset(p)pendingLegacy[p]=nil;dirty[p]=nil;buffers[p]=nil;pendingOps[p]=nil;displayRevs[p]=nil;nextPush[p]=nil end
 function Q.SetFixture(p,enabled,timestamp)fixtures[p]=enabled and true or nil;overrides[p]=timestamp;Q.Reset(p)end
 function Q.SetTime(p,timestamp)assert(fixtures[p] and finite(timestamp) and timestamp%1==0,'Invalid fixture clock');overrides[p]=timestamp;dirty[p]=true end
-function Q.ClearContext(p,events)local op=payload(p,'progress');op.events=events;return op end
+function Q.ClearContext(p,events)
+ for _,e in events do if type(e.ctx)=='table' and e.ctx.mapKind=='Mansion' then e.ctx.mapKind='Manor' end end -- same rename as Q.Record
+ local op=payload(p,'progress');op.events=events;return op
+end
 function Q.ProfileChanged(p)dirty[p]=true end
 function Q.Profile(p)return bridge and bridge.Profile(p)end
 function Q.Push(p)push(p)end
@@ -368,6 +374,7 @@ function Q.Bind(owner)
   nextRemote[p]=nil;nextPush[p]=nil;displayRevs[p]=nil;fixtures[p]=nil;overrides[p]=nil
  end)
  game:BindToClose(function()
+  if game:GetService('RunService'):IsStudio() then return end -- Studio stop: close-time saves can hang the server shutdown
   local pending=0
   for p in buffers do pending+=1;task.spawn(function()Q.Flush(p);pending-=1 end)end
   local untilAt=os.clock()+25;while pending>0 and os.clock()<untilAt do task.wait(.1)end

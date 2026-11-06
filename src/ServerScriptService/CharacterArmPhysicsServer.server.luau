@@ -67,16 +67,10 @@ local function characterAdded(player,character)
             table.insert(colliders,collider)
         end
     end
-    for i,p in colliders do
-        for _,q in character:GetDescendants() do
-            if q:IsA('BasePart') and p~=q and q.Name~='ArmPhysicsCollider' then
-                local nc=Instance.new('NoCollisionConstraint');nc.Part0=p;nc.Part1=q;nc.Parent=p
-            end
-        end
-        for j=i+1,#colliders do
-            local nc=Instance.new('NoCollisionConstraint');nc.Part0=p;nc.Part1=colliders[j];nc.Parent=p
-        end
-    end
+    -- Owner 2026-10-29 'everything loads at the same time on spawn': no NoCollisionConstraints any more. Every collider
+    -- was paired with every body part (~670 constraints per character, created at spawn, replicated to all players and
+    -- copied by every character clone: lobby board avatar, first-person hands). They did nothing: the colliders never
+    -- collide (update() keeps physical=false) and the ARM / BODY collision groups above already exclude each other.
     if player.Character==character then
         rigs[player]={character=character,humanoid=humanoid,root=root,colliders=colliders,joints=joints,bodyConnection=bodyConnection,quiet=0}
         -- The owner's Animator also drives the physical arm targets. Pin all six

@@ -64,7 +64,14 @@ local function overlap(a,b)
  end
  return ou*ov,a.c+a.u*((lo_u+hi_u)/2)+a.v*((lo_v+hi_v)/2),ou,ov
 end
-local function sameLook(a,b)return a.Color==b.Color and a.Material==b.Material and a.Transparency==b.Transparency and a.MaterialVariant==b.MaterialVariant end
+-- Same colour and material only looks the same when nothing is drawn on top: Texture/Decal/SurfaceAppearance
+-- children or a mesh TextureID (Mall/Hotel walls and floors are white parts with textures) still Z-fight.
+local function skinned(p)
+ if p:IsA('MeshPart')and p.TextureID~=''then return true end
+ for _,c in p:GetChildren()do if c:IsA('Decal')or c:IsA('SurfaceAppearance')then return true end end
+ return false
+end
+local function sameLook(a,b)return a.Color==b.Color and a.Material==b.Material and a.Transparency==b.Transparency and a.MaterialVariant==b.MaterialVariant and not skinned(a)and not skinned(b)end
 
 -- Grid of opaque part boxes (any shape) for the "is this point inside something solid" test.
 local function buildGrid(parts)
@@ -97,12 +104,13 @@ end
 -- A mesh's bounding-box face is only a real surface when the mesh actually reaches it: cast at the point from just
 -- outside, against that part alone (CanQuery is switched on for the cast and restored).
 local castParams=RaycastParams.new();castParams.FilterType=Enum.RaycastFilterType.Include
-local surfaceCache=setmetatable({},{__mode='k'}) -- [part][face key]=bool: one cast per mesh face, not per pair
+local surfaceCache=setmetatable({},{__mode='k'}) -- [part][face key|4-stud cell]=bool: a floor with a stair hole is real away from the hole
 local casts=0
 local function surfaceAt(p,point,n)
  local cf=p.CFrame;local key
  for i,a in{cf.RightVector,cf.UpVector,cf.LookVector}do local dot=a:Dot(n);if math.abs(dot)>0.999 then key=i*(dot>0 and 1 or -1)break end end
  local cache=surfaceCache[p];if not cache then cache={};surfaceCache[p]=cache end
+ if key then key=key..'|'..math.floor(point.X/4)..','..math.floor(point.Y/4)..','..math.floor(point.Z/4)end
  if key and cache[key]~=nil then return cache[key]end
  casts+=1;if casts%300==0 then task.wait()end
  local query=p.CanQuery;if not query then p.CanQuery=true end
@@ -114,8 +122,8 @@ local function surfaceAt(p,point,n)
  return real
 end
 
--- Visible z-fighting pairs: {a,b,faceA,faceB,area,point,n}
-function M.Find(root,eps)
+-- Visible z-fighting pairs: {a,b,faceA,faceB,area,point,n}; only (optional set of parts) limits it to pairs touching them
+function M.Find(root,eps,only)
  eps=eps or PLANE_EPS
  local list,parts,count,index={}, {},0,{}
  for _,p in root:GetDescendants()do
@@ -127,25 +135,32 @@ function M.Find(root,eps)
  end
  local grid=buildGrid(parts)
  local buckets={}
- for _,f in list do local k=nkey(f.n)..'|'..math.floor(f.d/BUCKET);local b=buckets[k];if not b then b={};buckets[k]=b end;table.insert(b,f)end
+ for i,f in list do f.i=i;local k=nkey(f.n)..'|'..math.floor(f.d/BUCKET);local b=buckets[k];if not b then b={};buckets[k]=b end;table.insert(b,f)end
  local found,seen,checks={}, {},0
- for _,f in list do
+ local outer=list
+ if only then outer={};for _,f in list do if only[f.part]then table.insert(outer,f)end end end
+ for _,f in outer do
   local base=nkey(f.n);local slot=math.floor(f.d/BUCKET)
   for off=-1,1 do
    local b=buckets[base..'|'..(slot+off)]
    if b then for _,g in b do
     checks+=1;if checks%20000==0 then task.wait()end
-    if g.part~=f.part and math.abs(g.d-f.d)<eps and f.n:Dot(g.n)>0.9995 and not sameLook(f.part,g.part)then
-     local ia,ib=index[f.part],index[g.part]
+    if g.part~=f.part and(not only or only[f.part]or only[g.part])and math.abs(g.d-f.d)<eps and f.n:Dot(g.n)>0.9995 and not sameLook(f.part,g.part)then
+     -- per face pair, not per part pair: two parts can meet on several planes (bottoms hidden, ends visible)
+     local ia,ib=f.i,g.i
      local id=ia<ib and ia..'|'..ib or ib..'|'..ia
      if not seen[id]then
       seen[id]=true
       local area,point,ou,ov=overlap(f,g)
       if area>=MIN_AREA then
        -- visible only if the space just in front of the shared face is not solid
-       local front=point+f.n*PROBE
+       -- visible if any of 3x3 spots over the overlap has open space in front (a crossing wall may cover the centre)
+       local open=false
+       for _,su in{-0.4,0,0.4}do for _,sv in{-0.4,0,0.4}do
+        if not open and not solidAt(grid,point+f.u*(ou*su)+f.v*(ov*sv)+f.n*PROBE,f.part,g.part)then open=true end
+       end end
        local real=(not f.mesh or surfaceAt(f.part,point,f.n))and(not g.mesh or surfaceAt(g.part,point,f.n))
-       if real and not solidAt(grid,front,f.part,g.part)then
+       if real and open then
         table.insert(found,{a=f.part,b=g.part,fa=f,fb=g,area=area,point=point,n=f.n})
        end
       end
@@ -172,11 +187,11 @@ local function shiftFace(p,axis,sign,amount)
  return true
 end
 
--- Returns how many faces were changed.
-function M.Apply(root)
+-- Returns how many faces moved and the set of parts that moved.
+local function applyOnce(root,only)
  local interactive=root:FindFirstChild('Interactive')
- local done,count={},0 -- done[part][axis..sign]: each face fixed at most once, every face of a part considered
- for _,pair in M.Find(root)do
+ local done,count,moved={},0,{} -- done[part][axis..sign]: each face fixed at most once, every face of a part considered
+ for _,pair in M.Find(root,nil,only)do
   local small,big,sf,bf=pair.a,pair.b,pair.fa,pair.fb
   if pair.fb.area<pair.fa.area then small,big,sf,bf=pair.b,pair.a,pair.fb,pair.fa end
   local fixed=false
@@ -187,7 +202,7 @@ function M.Apply(root)
    if axis and not done[small][key]then
     -- grow the small part's front face to GAP in front of the big part's face
     local grow=(bf.d+GAP)-small.CFrame.Position:Dot(pair.n)-small.Size[axis]/2
-    if grow>0 then fixed=shiftFace(small,axis,sign,grow)else fixed=true end
+    if grow>0 then fixed=shiftFace(small,axis,sign,grow);if fixed then count+=1;moved[small]=true end else fixed=true end
     done[small][key]=true
    elseif axis then fixed=true end
   end
@@ -198,13 +213,34 @@ function M.Apply(root)
    if axis and not done[big][key]then
     -- pull the big part's face back to GAP behind the small part's face
     local inset=big.CFrame.Position:Dot(pair.n)+big.Size[axis]/2-(sf.d-GAP)
-    if inset>0 then fixed=shiftFace(big,axis,sign,-inset)end
+    if inset>0 then fixed=shiftFace(big,axis,sign,-inset);if fixed then count+=1;moved[big]=true end end
     done[big][key]=true
    end
   end
-  if fixed then count+=1 end
  end
- root:SetAttribute('ZFightFixed',count)
- return count
+ return count,moved
+end
+
+-- Three or more parts on one plane: the first pass moves two of them the same GAP out, where they meet again;
+-- later passes separate what the previous one left.
+function M.Apply(root)
+ local total,t0=0,os.clock()
+ local interactive=root:FindFirstChild('Interactive')
+ -- Zero-length wall pieces (0.001 studs on an axis) are two coplanar faces on top of their neighbours' ends:
+ -- they cannot be moved apart, so they stop drawing (collision stays).
+ for _,p in root:GetDescendants()do
+  if p:IsA('BasePart')and movable(p,interactive)and math.min(p.Size.X,p.Size.Y,p.Size.Z)<=0.002 then
+   p.Transparency=1;p.CastShadow=false
+   for _,c in p:GetChildren()do if c:IsA('Decal')then c.Transparency=1 end end
+  end
+ end
+ local only
+ for _=1,6 do
+  local n,moved=applyOnce(root,only);total+=n
+  if n==0 then break end
+  only=moved -- later passes only look at pairs that touch a part the previous pass moved
+ end
+ root:SetAttribute('ZFightFixed',total);root:SetAttribute('ZFightSeconds',os.clock()-t0)
+ return total
 end
 return M

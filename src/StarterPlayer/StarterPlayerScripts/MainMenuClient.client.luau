@@ -5,7 +5,10 @@ local Players=game:GetService('Players')
 local RS=game:GetService('ReplicatedStorage')
 local Run=game:GetService('RunService')
 local UIS=game:GetService('UserInputService')
+local MENU_TOUCH_SCALE,MENU_TOUCH_MIN=.8,.7 -- lobby menu grid size on phones and tablets
 local GuiService=game:GetService('GuiService')
+-- Consoles (owner 2026-10-25): a TV is viewed from the couch, so the lobby icons, Quests bar, PLAY and rank card are 30% bigger.
+local TV_SCALE=GuiService:IsTenFootInterface()and 1.3 or 1
 local Tween=game:GetService('TweenService')
 local CAS=game:GetService('ContextActionService')
 local p=Players.LocalPlayer
@@ -31,7 +34,7 @@ local function shopButton(parent,name,value,x,y,w,h,callback,enabled)
  return b
 end
 local Appearance=require(RS:WaitForChild('AppearanceWidgets'))
-local defaults={MasterVolume=.65,EffectsVolume=.7,MenuMusicVolume=.25,Jumpscares=true,FlashingLights=true,CameraMotion=true,SpitEffects=true,VoiceEffects=true}
+local defaults={MasterVolume=.65,EffectsVolume=.7,MenuMusicVolume=.25,Jumpscares=true,FlashingLights=true,CameraMotion=true,SpitEffects=true,VoiceEffects=true,MobileHighQuality=true}
 local preferences=table.clone(defaults)
 local party,friendResults,browseResults=nil,{},{}
 local tab=nil;local playMode='Create';
@@ -44,7 +47,7 @@ local friendsOnly,privatePassword=false,false
 -- Run saves (party owner only, 3 slots): chosen before creating a party.
 local saveOpen,saveSlots,saveLoading,chosenSave,confirmDelete=false,nil,false,nil,nil
 local saveLoadError=nil
-local progress={ready=false,tokens=0,owned={},equipped={},stats={}}
+local progress: any={ready=false,tokens=0,owned={},equipped={},stats={}}
 local boardCategory='HighestLevel';local boardRows={};local boardPage=1;local shopPage=1;local boardLoading=false
 local passwordValue,friendQuery,joinPassword='','',''
 local status='Choose your crew. Bring everyone back.'
@@ -70,10 +73,22 @@ end
 local function text(parent,name,value,x,y,w,h,size,color)
  local t=Instance.new('TextLabel');t.Name=name;t.Text=value;t.Position=UDim2.fromOffset(x,y);t.Size=UDim2.fromOffset(w,h);t.BackgroundTransparency=1;t.Font=Enum.Font.FredokaOne;t.TextSize=size or 20;t.TextColor3=color or colors.cream;t.TextXAlignment=Enum.TextXAlignment.Left;t.TextWrapped=true;t.Parent=parent;return t
 end
+-- Console focus (2026-10-22): a thick gold ring just outside the button that breathes while it is selected;
+-- the old thin cream line was easy to miss on a TV.
+local FOCUS_GOLD=Color3.fromRGB(255,206,64)
+local function focusRing(b,radius)
+ local ring=Instance.new('Frame');ring.Name='FocusRing';ring.BackgroundTransparency=1;ring.Size=UDim2.new(1,10,1,10);ring.Position=UDim2.fromOffset(-5,-5)
+ corners(ring,radius+5);local line=stroke(ring,FOCUS_GOLD,4)
+ b.SelectionImageObject=ring
+ local pulse
+ b.SelectionGained:Connect(function()if pulse then pulse:Cancel()end;line.Transparency=0;pulse=Tween:Create(line,TweenInfo.new(.55,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut,-1,true),{Transparency=.5});pulse:Play()end)
+ b.SelectionLost:Connect(function()if pulse then pulse:Cancel();pulse=nil end;line.Transparency=0 end)
+ return ring
+end
 local function button(parent,name,value,x,y,w,h,callback,accent)
  
  local b=Instance.new('TextButton');b.Name=name;b.Text=value;b.Position=UDim2.fromOffset(x,y);b.Size=UDim2.fromOffset(w,h);b.BackgroundColor3=accent and colors.green or colors.card;b.BorderSizePixel=0;b.Font=Enum.Font.FredokaOne;b.TextSize=16;b.TextColor3=accent and colors.ink or colors.cream;b.AutoButtonColor=false;b.Selectable=true;b.Parent=parent;corners(b,12);local outline=stroke(b)
- local selection=Instance.new('Frame');selection.BackgroundTransparency=1;selection.Size=UDim2.fromScale(1,1);corners(selection,12);stroke(selection,colors.cream,4);b.SelectionImageObject=selection
+ focusRing(b,12)
  local base=b.BackgroundColor3
  b.MouseEnter:Connect(function()Tween:Create(b,TweenInfo.new(.12),{BackgroundColor3=base:Lerp(colors.cream,.1)}):Play();outline.Color=colors.green end)
  b.MouseLeave:Connect(function()Tween:Create(b,TweenInfo.new(.12),{BackgroundColor3=base}):Play();outline.Color=colors.ink end)
@@ -96,12 +111,18 @@ local function input(parent,name,placeholder,value,x,y,w,h,changed,secret)
 end
 local render
 local noticeToken=0
+-- Toast top offset: NOTICE_TOP in the lobby; in a mission it sits NOTICE_QUOTA_GAP below the quota HUD so it never covers the quota.
+local NOTICE_TOP,NOTICE_QUOTA_GAP=58,14
 local function notice(value)
  status=value or '';if statusLabel and statusLabel.Parent then statusLabel.Text=status;return end
  -- No panel open: a short toast at the top of the screen.
  local pg=p:FindFirstChildOfClass('PlayerGui');if not pg or status==''then return end
  local toast=pg:FindFirstChild('LobbyNotice')or Instance.new('ScreenGui');toast.Name='LobbyNotice';toast.ResetOnSpawn=false;toast.DisplayOrder=210;toast.ScreenInsets=Enum.ScreenInsets.CoreUISafeInsets;toast.Parent=pg
- local label=toast:FindFirstChild('Text')or Instance.new('TextLabel');label.Name='Text';label.AnchorPoint=Vector2.new(.5,0);label.Position=UDim2.new(.5,0,0,58);label.Size=UDim2.new(.6,0,0,30);label.BackgroundTransparency=1;label.Font=Enum.Font.FredokaOne;label.TextScaled=true;label.TextColor3=Color3.fromRGB(244,236,210);label.TextStrokeTransparency=.1;label.Text=status;label.Parent=toast
+ local label=toast:FindFirstChild('Text')or Instance.new('TextLabel');label.Name='Text';label.AnchorPoint=Vector2.new(.5,0);label.Size=UDim2.new(.6,0,0,30);label.BackgroundTransparency=1;label.Font=Enum.Font.FredokaOne;label.TextScaled=true;label.TextColor3=Color3.fromRGB(244,236,210);label.TextStrokeTransparency=.1;label.Text=status;label.Parent=toast
+ local quota=pg:FindFirstChild('RecoveryQuota');local panel=quota and quota:FindFirstChild('QuotaPanel')
+ -- In a mission the quota HUD may be hidden for a moment (phase change); still keep clear of where it sits (82 px, 53 on phones).
+ local top=if p:GetAttribute('MissionActive')==true and panel and panel:IsA('GuiObject')then math.max(panel.AbsoluteSize.Y,53)+NOTICE_QUOTA_GAP else NOTICE_TOP
+ label.Position=UDim2.new(.5,0,0,top)
  noticeToken+=1;local mine=noticeToken;task.delay(4,function()if mine==noticeToken and toast.Parent then toast:Destroy()end end)
 end
 -- Achievement feedback belongs to the existing menu client, including during missions.
@@ -144,6 +165,11 @@ local function updatePrefs(key,value)
  preferences[key]=value;p:SetAttribute('LocalSetting'..key,value)
  request('preferences',preferences,function(data)if data and data.preferences then preferences=data.preferences end end)
 end
+-- MobileQualityClient switches HIGH QUALITY off by itself when a phone lags: save that choice like the button does.
+p:GetAttributeChangedSignal('LocalSettingMobileHighQuality'):Connect(function()
+ local v=p:GetAttribute('LocalSettingMobileHighQuality')
+ if type(v)=='boolean'and preferences.MobileHighQuality~=v then preferences.MobileHighQuality=v;request('preferences',preferences,nil,true)end
+end)
 
 local friendPage,browsePage=1,1
 local pendingFocusRestore
@@ -153,7 +179,8 @@ local function rememberFocus(container)
 end
 local refreshBrowse;local browseDirty=false;local browseFlight=false;local browseTicket=0
 local activeRegion='body'
-local draft,dirty={},{}
+local draft: {[string]: any}={}
+local dirty={}
 local previewModel
 local pickerRefresh
 local function getSaved(region)
@@ -177,7 +204,7 @@ local function dressPreview()
  if not previewModel or not previewModel.Parent then return end
  local old=previewModel:FindFirstChild('PreviewCosmetics');if old then old:Destroy()end
  local folder=Instance.new('Folder');folder.Name='PreviewCosmetics';folder.Parent=previewModel
- CosmeticRig.Wear(previewModel,progress.equipped or {},folder)
+ CosmeticRig.Wear(previewModel,progress.equipped or {},folder,progress.stages)
 end
 local function applyColour()
  local c=draft[activeRegion];if not c then return end
@@ -237,7 +264,7 @@ end
 local focusCreateNext=false
 local function drawSavePicker()
  local card=frame(bodyContent,'RunSaves',0,46,bodyW,bodyH-46)
- text(card,'Title','CHOOSE A SAVE',12,8,bodyW-24,26,20)
+ text(card,'Title',hostCircle and 'STEP 1: PICK A SAVE' or 'CHOOSE A SAVE',12,8,bodyW-24,26,20)
  if not saveSlots then
   if saveLoadError then
    -- Failed or timed out: say so and offer a retry instead of loading forever.
@@ -248,7 +275,19 @@ local function drawSavePicker()
    text(card,'Loading','Loading your saves...',12,44,bodyW-24,24,14,colors.muted)
    if not saveLoading then
     saveLoading=true
-    request('runSaves.list',{},function(data)saveLoading=false;saveLoadError=nil;saveSlots=type(data)=='table'and data.slots or{false,false,false};render()end,true,function(err)
+    request('runSaves.list',{},function(data)
+     saveLoading=false;saveLoadError=nil;saveSlots=type(data)=='table'and data.slots or{false,false,false}
+     -- No saves at all (first visit, or every save deleted): make Run 1 and go straight to WHO PLAYS, no picking.
+     local any=false;for i=1,3 do if saveSlots[i]then any=true end end
+     if not any and hostCircle and type(data)=='table'then
+      request('runSaves.create',{index=1,name='Run 1'},function(made)
+       saveSlots=type(made)=='table'and made.slots or saveSlots;chosenSave={slot=1,mode='new'};saveOpen=false;hostStep='size';focusCreateNext=true
+       notice('Your first save is ready. Choose who plays.');render()
+      end,false,function()render()end)
+      return
+     end
+     render()
+    end,true,function(err)
      saveLoading=false;saveLoadError=err or 'Please try again.';if saveOpen then render()end
     end)
    end
@@ -267,21 +306,21 @@ local function drawSavePicker()
    -- Two lines when the row is tall enough, otherwise the name only; text always stays inside the row.
    local twoLines=rowH>=44
    local nameH=twoLines and math.floor(rowH*.48)or rowH-4
-   local nameLabel=text(row,'Name',(s and(s.name or('SAVE '..i))or('SLOT '..i..'  -  EMPTY'))..(selected and '  (SELECTED)'or ''),10,twoLines and 3 or 2,infoW,nameH,15,selected and colors.green or colors.cream)
+   local nameLabel=text(row,'Name',(s and(s.name or('SAVE '..i))or('EMPTY SLOT '..i))..(selected and '  (SELECTED)'or ''),10,twoLines and 3 or 2,infoW,nameH,15,selected and colors.green or colors.cream)
    nameLabel.TextScaled=true;nameLabel.TextWrapped=false;local nameCap=Instance.new('UITextSizeConstraint');nameCap.MaxTextSize=15;nameCap.MinTextSize=8;nameCap.Parent=nameLabel
    if twoLines then
-    local info=text(row,'Info',s and('Level '..(s.round or 1)..'  |  '..(s.chances or 3)..'/3 chances'..(type(s.updatedAt)=='number'and('  |  saved '..os.date('%b %d %H:%M',s.updatedAt))or ''))or 'Start a brand-new run here.',10,3+nameH,infoW,rowH-nameH-6,12,colors.muted)
+    local info=text(row,'Info',s and('Level '..(s.round or 1)..'  |  '..math.min(s.chances or 2,2)..'/2 chances'..(type(s.updatedAt)=='number'and('  |  saved '..os.date('%b %d %H:%M',s.updatedAt))or ''))or 'Start a brand-new run here.',10,3+nameH,infoW,rowH-nameH-6,12,colors.muted)
     info.TextScaled=true;info.TextWrapped=false;local infoCap=Instance.new('UITextSizeConstraint');infoCap.MaxTextSize=12;infoCap.MinTextSize=7;infoCap.Parent=info
    end
    local bh=math.min(32,rowH-6);local by=math.floor((rowH-bh)/2)
    if s then
-    button(row,'Load','LOAD',bodyW-24-bw*2-16,by,bw,bh,function()chosenSave={slot=i,mode='load'};saveOpen=false;hostStep='size';focusCreateNext=true;notice('Save selected: '..(s.name or('Save '..i))..', level '..(s.round or 1)..'.');render()end,true)
+    button(row,'Load','CONTINUE',bodyW-24-bw*2-16,by,bw,bh,function()chosenSave={slot=i,mode='load'};saveOpen=false;hostStep='size';focusCreateNext=true;notice('Save selected: '..(s.name or('Save '..i))..', level '..(s.round or 1)..'.');render()end,true).TextSize=compact and 12 or 14
     button(row,'Delete',confirmDelete==i and 'SURE?'or 'DELETE',bodyW-24-bw-8,by,bw,bh,function()
      if confirmDelete~=i then confirmDelete=i;notice('Press again to erase this save.');render();return end
      confirmDelete=nil;request('runSaves.delete',{index=i},function(data)saveSlots=type(data)=='table'and data.slots or saveSlots;if chosenSave and chosenSave.slot==i then chosenSave=nil end;notice('Save deleted.');render()end)
     end)
    else
-    button(row,'New','NEW SAVE',bodyW-24-bw*2-16,by,bw*2+8,bh,function()
+    button(row,'New','NEW GAME',bodyW-24-bw*2-16,by,bw*2+8,bh,function()
      request('runSaves.create',{index=i,name='Run '..i},function(data)saveSlots=type(data)=='table'and data.slots or saveSlots;chosenSave={slot=i,mode='new'};saveOpen=false;hostStep='size';focusCreateNext=true;notice('New save made in slot '..i..'.');render()end)
     end,true)
    end
@@ -307,7 +346,7 @@ local function drawPlay()
   return
  end
  -- Step tabs: SAVE first, then PLAYERS, then PRIVACY (later steps unlock once a save is chosen).
- local steps={{'save','1  SAVE'},{'size','2  PLAYERS'},{'privacy','3  PRIVACY'}}
+ local steps={{'save','1  PICK SAVE'},{'size','2  WHO PLAYS'},{'privacy','3  WHO CAN JOIN'}}
  for i,st in ipairs(steps)do
   local key=st[1]
   local b=button(bodyContent,'Step'..i,st[2],(i-1)*(bodyW+10)/3,0,(bodyW-20)/3,32,function()
@@ -315,16 +354,18 @@ local function drawPlay()
    elseif chosenSave then hostStep=key;render()else notice('Choose a save first.')end
   end,hostStep==key);b.TextSize=13
  end
+ -- Plain next-step guidance under the header for first-time hosts (overwrites the last notice on purpose).
+ if statusLabel then statusLabel.Text=hostStep=='save'and'Your level is kept in a save. New here? Press NEW GAME.'or hostStep=='size'and'Playing alone? Press JUST ME and the game starts.'or'Choose who can join, then press OPEN MY RUN.';statusLabel.TextColor3=colors.cream end
  if hostPending then text(bodyContent,'Opening','OPENING CIRCLE '..tostring(hostCircle)..'...',0,40,bodyW,40,22);return end
  if hostStep=='save'then saveOpen=true;drawSavePicker();return end
  local cardH=bodyH-46
  local card=frame(bodyContent,'HostSetup',0,46,bodyW,cardH)
  button(card,'CancelHost','CANCEL',12,cardH-46,120,34,function()cancelHost()end)
  if hostStep=='size'then
-  text(card,'Title','HOW MANY PLAYERS?',12,8,bodyW-24,26,20)
+  text(card,'Title','PLAY SOLO OR WITH FRIENDS',12,8,bodyW-24,26,20)
   local cell=(bodyW-24-18)/4
   for n=1,4 do
-   local b=button(card,'Size'..n,n==1 and 'SOLO'or tostring(n),12+(n-1)*(cell+6),44,cell,64,function()
+   local b=button(card,'Size'..n,n==1 and 'JUST ME'or tostring(n),12+(n-1)*(cell+6),44,cell,64,function()
     chosenSize=n
     if n==1 then
      -- Solo: nobody to wait for, so skip privacy and go straight into the game.
@@ -337,17 +378,17 @@ local function drawPlay()
     hostStep='privacy';render()
    end,chosenSize==n);b.TextSize=n==1 and 22 or 28
   end
-  text(card,'Note','SOLO starts right away. Bigger runs open your box for friends first.',12,120,bodyW-24,44,14,colors.muted)
+  text(card,'Note','Play alone instantly, or invite up to 3 friends to survive together.',12,120,bodyW-24,44,14,colors.muted)
   padFocus(card:FindFirstChild('Size'..chosenSize))
  else
-  text(card,'Title','WHO CAN JOIN?',12,8,bodyW-24,26,20)
+  text(card,'Title','STEP 3: WHO CAN JOIN?',12,8,bodyW-24,26,20)
   local third=(bodyW-24-12)/3
   local options={{'Public','PUBLIC',not friendsOnly and not privatePassword},{'Friends','FRIENDS ONLY',friendsOnly and not privatePassword},{'Password','PASSWORD',privatePassword}}
   for i,o in ipairs(options)do
    button(card,'Access'..o[1],o[2],12+(i-1)*(third+6),44,third,48,function()friendsOnly=o[1]=='Friends';privatePassword=o[1]=='Password';render()end,o[3]).TextSize=15
   end
-  local pass=input(card,'PartyPassword',privatePassword and 'Password (4-40 characters)'or 'Pick PASSWORD to set one',passwordValue,12,104,bodyW-24,38,function(v)passwordValue=v end,true);pass.TextEditable=privatePassword
-  local create=button(card,'CreateParty','OPEN CIRCLE '..hostCircle..'  ('..chosenSize..(chosenSize==1 and ' PLAYER)'or ' PLAYERS)'),12,156,bodyW-24,48,function()
+  local pass=input(card,'PartyPassword',privatePassword and 'Type a password (4-40 characters)'or friendsOnly and 'Only your Roblox friends can join.'or 'Anyone in the lobby can walk in and join.',passwordValue,12,104,bodyW-24,38,function(v)passwordValue=v end,true);pass.TextEditable=privatePassword
+  local create=button(card,'CreateParty','OPEN MY RUN  ('..chosenSize..(chosenSize==1 and ' PLAYER)'or ' PLAYERS)'),12,156,bodyW-24,48,function()
    passwordValue=pass.Text
    request('create',{size=chosenSize,friendsOnly=friendsOnly and not privatePassword,password=privatePassword and passwordValue or '',save=chosenSave,circle=hostCircle},function(data)
     party=data.party;hostCircle=nil;hostStep='save';tab=nil
@@ -393,6 +434,13 @@ local function drawSettings()
  local audioH=compact and 250 or bodyH-44
  local card=frame(bodyContent,'AudioSettings',0,0,audioW,audioH)
  text(card,'Title','AUDIO',12,8,audioW-24,26,21)
+ -- Phones and tablets: HIGH QUALITY is on by default (MobileQualityClient turns it off if the game lags); this toggles it.
+ if InputHints.IsMobile()then
+  local on=require(RS.HorrorPreferences).Get('MobileHighQuality')~=false
+  button(card,'HighQuality',on and 'HIGH QUALITY: ON'or 'HIGH QUALITY: OFF',audioW-172,6,160,30,function()
+   preferences.MobileHighQuality=not on;p:SetAttribute('LocalSettingMobileHighQuality',not on);request('preferences',preferences);render()
+  end,on)
+ end
  for i,row in {{'MasterVolume','Overall volume'},{'EffectsVolume','Sound effects'},{'MenuMusicVolume','Menu music'}}do audioSlider(card,row[1],row[2],42+(i-1)*55,audioW)end
  button(card,'TestSound','TEST SOUND',12,210,audioW-24,28,function()
   local pref=require(RS.HorrorPreferences)
@@ -547,6 +595,7 @@ local function displayRobuxPrice(offer)
  end)end
  return nil
 end
+local storeQuietUntil=0
 local function drawStore()
  button(bodyContent,'TokenShop','TOKEN SHOP',0,0,(bodyW-10)/2,36,function()shopTab='Tokens';shopPage=1;storePopPending=true;render()end,shopTab=='Tokens')
  button(bodyContent,'RobuxShop','ROBUX SHOP',(bodyW+10)/2,0,(bodyW-10)/2,36,function()shopTab='Robux';shopPage=1;storePopPending=true;render()end,shopTab=='Robux')
@@ -569,7 +618,7 @@ local function drawStore()
   local owned=robux and progress.passes and progress.passes[offer.id]or(not robux and progress.owned and progress.owned[offer.id])
   local grant=offer.grants and Shop.ById[offer.grants] -- Robux pass that unlocks a wearable cosmetic
   local equipped=progress.equipped and(offer.id=='vip'and progress.equipped.Title=='title_vip'and progress.equipped.Aura=='aura_vip'or grant and progress.equipped[grant.kind]==grant.id or progress.equipped[offer.kind]==offer.id)
-  local cost=upgrade and Shop.UpgradeCosts[tier+1]or offer.price
+  local cost=upgrade and Shop.UpgradeCostFor(offer.stat,tier,p:GetAttribute('ShopTutorialStep'))or offer.price
   local actualPrice=robux and displayRobuxPrice(offer)
   local maxed=upgrade and tier>=#Shop.UpgradeCosts
   local column=i-(shopPage-1)*rows-1
@@ -605,12 +654,20 @@ local function drawStore()
    desc=offer.stat=='Speed'and(v[1]..' walk / '..v[2]..' sprint\nMax: 16 / 26')or offer.stat=='Stamina'and(v..' stamina\nMax: 200')or(v..'x brightness\n'..'36'..' stud reach')
   end
   if lowWide and robux then
-   local short={infinite_stamina='Unlimited sprint.\nPermanent.',double_speed='2x speed, capped.\n20 walk / 32 sprint.',free_revive='1 free revive per game.',revive_token='1 saved revive.\nCarries over.',revive_pack_3='3 saved revives.\nCarries over.',instant_win='1 saved clear charge.\nUSE it in the van.',double_tokens='50 tokens per extraction.',vip='Exclusive title + aura.'}
+   local short={infinite_stamina='Unlimited sprint.\nPermanent.',double_speed='2x walk and sprint.\nPermanent.',free_revive='1 free revive\nevery level.',revive_token='1 saved revive.\nCarries over.',revive_pack_3='3 saved revives.\nCarries over.',instant_win='1 saved clear charge.\nUSE it in the van.',double_tokens='50 tokens per extraction.',vip='Exclusive title + aura.'}
    desc=short[offer.id]or desc
   elseif lowWide and not upgrade then desc=offer.kind=='Title'and'Permanent survivor title.'or offer.kind=='Aura'and'Permanent cosmetic aura.'or offer.kind=='Shirt'and'Permanent belly tattoo.'or('Permanent '..offer.kind:lower()..' cosmetic.')end
+  -- Staged cosmetics (WorldB): a locked one says what unlocks it; an owned one says which look it is on and what is next.
+  local lockText=not robux and not owned and progress.stageStats and Shop.CosmeticLocked and Shop.CosmeticLocked(offer,progress.stageStats)or nil
+  if lockText then desc=lockText
+  elseif not robux and offer.stages and progress.stageStats and Shop.CosmeticStage then
+   local look=Shop.CosmeticStage(offer,progress.stageStats);local st=offer.stages
+   desc=(desc or '')..'\nNow: '..(st.names and st.names[look] or ('look '..look))..' ('..look..' of '..#st.at..')'..(st.next and st.next[look] and ('. Next look at '..st.next[look]..'.')or '')
+  end
   local descY=nameY+nameH+5
   local descLabel=text(card,'Description',desc,8,descY,cardW-16,math.max(12,cardH-descY-(lowWide and 54 or 82)),lowWide and 10 or 12,colors.muted);descLabel.Visible=not(lowWide and workspace.CurrentCamera.ViewportSize.Y<420);descLabel.TextXAlignment=Enum.TextXAlignment.Center;descLabel.TextWrapped=true;descLabel.TextScaled=true;local descLimit=Instance.new('UITextSizeConstraint');descLimit.MinTextSize=7;descLimit.MaxTextSize=12;descLimit.Parent=descLabel;descLabel.FontFace=UI.Font.Body;descLabel.TextColor3=UI.Color.muted;descLabel.Visible=descLabel.Visible and not phoneShop
   local priceText=robux and(owned and 'OWNED'or actualPrice and('R$ '..actualPrice)or actualPrice==false and 'UNAVAILABLE'or'LOADING PRICE…')or(maxed and'MAXED'or owned and'OWNED'or(cost..' TOKENS'))
+  if lockText then priceText='LOCKED - '..tostring(cost)..' TOKENS' end
   local priceLabel=text(card,'Price',priceText,6,cardH-(lowWide and 51 or 72),cardW-12,lowWide and 18 or 24,lowWide and 10 or 13,colors.green);priceLabel.TextXAlignment=Enum.TextXAlignment.Center;priceLabel.TextScaled=true;local priceLimit=Instance.new('UITextSizeConstraint');priceLimit.MinTextSize=5;priceLimit.MaxTextSize=13;priceLimit.Parent=priceLabel;priceLabel.FontFace=UI.Font.Display;priceLabel.TextColor3=UI.Color.gold;UI.outline(priceLabel,1.3)
   if phoneShop then
    priceLabel.Position=UDim2.fromOffset(8,math.ceil(32/layoutScale)+12);priceLabel.Size=UDim2.fromOffset(cardW-16,math.ceil(18/layoutScale))
@@ -628,7 +685,13 @@ local function drawStore()
     local ok=pcall(function()if offer.kind=='Pass'then Marketplace:PromptGamePassPurchase(p,offer.assetId)else Marketplace:PromptProductPurchase(p,offer.assetId)end end)
     if not ok then notice('Roblox purchases are unavailable right now.')end;return
    end
-   request('purchase',{offer=offer.id},function(data)progress=data.progress;notice(data.message);render()end)
+   local function buy()request('purchase',{offer=offer.id},function(data)progress=data.progress;notice(data.message);storeQuietUntil=os.clock()+2;render()end)end
+   -- Short on tokens (owner 2026-10-27): offer the smallest token pack that covers it; the purchase finishes when they arrive.
+   if cost and(progress.tokens or 0)<cost then
+    local pack,short=require(game:GetService('ReplicatedStorage'):WaitForChild('TokenTopUp')).Offer(cost,progress.tokens,buy)
+    if pack then notice(('You need %d more tokens. The %s pack covers it, and this finishes as soon as they arrive.'):format(short,pack.name));return end
+   end
+   buy()
   end,not owned and not maxed or wearable and owned and not equipped)
   if wearable and equipped then card:FindFirstChildOfClass('UIStroke').Color=colors.green end
   buyButton.TextScaled=true;local buyLimit=buyButton:FindFirstChildOfClass('UITextSizeConstraint')or Instance.new('UITextSizeConstraint');buyLimit.MinTextSize=6;buyLimit.MaxTextSize=13;buyLimit.Parent=buyButton
@@ -645,10 +708,10 @@ local GUIDE={
  {title='THE JOB',image='rbxassetid://87708580292288',body='You and up to three friends are an anomaly recovery crew. Every level starts in the back of the van. The board on the wall shows the level, the money your team has sold and the quota you must reach. The cart parked beside you is how you bring loot home.'},
  {title='EXPLORE',image='rbxassetid://81669469944858',body={kb='Walk into the mansion and search it room by room. Press F to switch your flashlight on and hold Shift to sprint. Your stamina bar is at the bottom left. Press E to open doors and drawers. Keys you find open locked doors.',pad='Walk into the mansion and search it room by room. Press B to switch your flashlight on and click the left stick to sprint. Your stamina bar is at the bottom left. Press X to open doors and drawers. Keys you find open locked doors.',touch='Walk into the mansion and search it room by room. Tap the flashlight button to light the way and tap RUN to sprint. Your stamina bar is at the bottom left. Aim at a door or drawer and tap OPEN DOOR or OPEN DRAWER. The button changes to CLOSE when it is open. Keys you find open locked doors.'}},
  {title='FIND LOOT',image='rbxassetid://92033552387060',body='Cursed loot sits on tables, shelves and floors. Get close and each item shows its name and how many dollars it is worth. Grab the valuable things first so your team reaches the quota sooner.'},
- {title='CARRY IT',image='rbxassetid://86133121534016',body={kb='Hold left click on an item to pick it up and keep holding to carry it. Let go to drop it. Scroll up to hold it further away and down to pull it closer. Most loot is cursed and changes you while you hold it: crying, burning eyes, swollen faces and stranger things. Some items do something the moment you grab them. Holding a cursed item near water washes it clean.',pad='Hold R2 on an item to pick it up and keep holding to carry it. Let go of R2 to drop it. Most loot is cursed and changes you while you hold it: crying, burning eyes, swollen faces and stranger things. Some items do something the moment you grab them. Holding a cursed item near water washes it clean.',touch='Aim at an item and tap GRAB to pick it up. Tap DROP to put it down. Most loot is cursed and changes you while you hold it: crying, burning eyes, swollen faces and stranger things. Some items do something the moment you grab them.'}},
- {title='LOAD THE CART',image='rbxassetid://104525918495959',body={kb='Let go of loot over the cart to drop it in, then hold left click on the cart to push it. Everything inside rides along, so one trip with a full cart beats many trips with your hands full. Keep the cart out of the way of creatures.',pad='Let go of loot over the cart to drop it in, then hold R2 on the cart to push it. Everything inside rides along, so one trip with a full cart beats many trips with your hands full. Keep the cart out of the way of creatures.',touch='Drop loot into the cart, then aim at the cart and tap GRAB to push it. Tap DROP to let go. Everything inside rides along, so one trip with a full cart beats many trips with your hands full.'}},
+ {title='CARRY IT',image='rbxassetid://86133121534016',body={kb='Hold left click on an item to pick it up and keep holding to carry it. Let go to drop it. Scroll up to hold it further away and down to pull it closer. Most loot is cursed and changes you while you hold it: crying, burning eyes, swollen faces and stranger things. Some items do something the moment you grab them. Holding a cursed item near water washes it clean.',pad='Hold RT on an item to pick it up and keep holding to carry it. Let go of RT to drop it. Most loot is cursed and changes you while you hold it: crying, burning eyes, swollen faces and stranger things. Some items do something the moment you grab them. Holding a cursed item near water washes it clean.',touch='Aim at an item and tap GRAB to pick it up. Tap DROP to put it down. Most loot is cursed and changes you while you hold it: crying, burning eyes, swollen faces and stranger things. Some items do something the moment you grab them.'}},
+ {title='LOAD THE CART',image='rbxassetid://104525918495959',body={kb='Let go of loot over the cart to drop it in, then hold left click on the cart to push it. Everything inside rides along, so one trip with a full cart beats many trips with your hands full. Keep the cart out of the way of creatures.',pad='Let go of loot over the cart to drop it in, then hold RT on the cart to push it. Everything inside rides along, so one trip with a full cart beats many trips with your hands full. Keep the cart out of the way of creatures.',touch='Drop loot into the cart, then aim at the cart and tap GRAB to push it. Tap DROP to let go. Everything inside rides along, so one trip with a full cart beats many trips with your hands full.'}},
  {title='SELL AND LEAVE',image='rbxassetid://107169339054581',body='Push the cart up to the van and leave it there while it sells. Once the board reaches the quota, everyone still alive climbs into the van and waits out the countdown to clear the level. Every level has a timer and a bigger quota. Clearing runs earns tokens for the Store.'},
- {title='STAY ALIVE',image='rbxassetid://139023300337438',body='Creatures roam the halls and follow noise. Talking and sprinting leave a trail. Keep your light on, stick together and hide in a closet if one gets close. If you die you spectate until your team clears the level, or use a revive. If everyone dies, your team retries the same level. A save gets 3 tries at a level; lose all 3 and it starts over as a new save at level 1.'},
+ {title='STAY ALIVE',image='rbxassetid://139023300337438',body='Creatures roam the halls and follow noise. Talking and sprinting leave a trail. Keep your light on, stick together and hide in a closet if one gets close. If you die you spectate until your team clears the level, or use a revive. If everyone dies, your team retries the same level. A save gets 2 tries at a level; lose both and it starts over as a new save at level 1.'},
  {title='CROUCH',image='rbxassetid://139023300337438',body={kb='Press C or Left Ctrl to crouch. Your whole belly flattens into a spinning disc, you move at half speed and you cannot sprint or jump. Crouch walks under desks and tables: stay tucked under one for a second and creatures lose track of you. Press C again to stand once you are out from under it.',pad='Click the right stick to crouch. Your whole belly flattens into a spinning disc, you move at half speed and you cannot sprint or jump. Crouch walks under desks and tables: stay tucked under one for a second and creatures lose track of you. Click the right stick again to stand once you are out from under it.',touch='Tap CROUCH to crouch. Your whole belly flattens into a spinning disc, you move at half speed and you cannot sprint or jump. Crouch walks under desks and tables: stay tucked under one for a second and creatures lose track of you. Tap STAND once you are out from under it.'}},
 }
 table.insert(GUIDE,{title='Badges',badges=true})
@@ -661,7 +724,9 @@ InputHints.Changed:Connect(function()
  local d=guideDevice();if d~=lastGuideDevice then lastGuideDevice=d;if tab=='Guide'and render then render()end end
 end)
 local function guideBody(entry)
- return type(entry.body)=='table'and(entry.body[guideDevice()]or entry.body.kb)or entry.body
+ local device=guideDevice()
+ local body=type(entry.body)=='table'and(entry.body[device]or entry.body.kb)or entry.body
+ return device=='pad'and InputHints.PadText(body)or body -- RT on Xbox, R2 on PlayStation
 end
 local function drawGuide()
  local entry=GUIDE[guidePage]
@@ -736,7 +801,7 @@ render=function()
  else storeEntranceStarted=nil;storePopPending=false end
  -- Fixed pages: no scroll listeners, clipped controls or off-screen sections.
  bodyContent.Size=UDim2.fromOffset(bodyW*layoutScale,bodyH*layoutScale)
- headerLabel.Text=tab=='Play'and(hostCircle and('HOST A RUN  |  CIRCLE '..hostCircle)or 'YOUR RUN.')or tab=='Join'and 'JOIN A RUN.'or tab=='Settings'and 'SOUND SETTINGS.'or tab=='Character'and 'PICK YOUR COLOUR.'or tab=='Leaders'and 'THE LEADERBOARDS.'or tab=='Guide'and 'HOW TO PLAY.'or 'THE STORE.'
+ headerLabel.Text=tab=='Play'and(hostCircle and('START A RUN  |  CIRCLE '..hostCircle)or 'YOUR RUN.')or tab=='Join'and 'JOIN A RUN.'or tab=='Settings'and 'SOUND SETTINGS.'or tab=='Character'and 'PICK YOUR COLOUR.'or tab=='Leaders'and 'THE LEADERBOARDS.'or tab=='Guide'and 'HOW TO PLAY.'or 'THE STORE.'
  if selectionName then local item=bodyContent:FindFirstChild(selectionName,true)or bodyContent:FindFirstChild('StartGame',true)or bodyContent:FindFirstChild('CreateParty',true);if item and item:IsA('GuiObject')and item.Selectable then GuiService.SelectedObject=item end end
  if focused then
   local field=bodyContent:FindFirstChild(focused.name,true)
@@ -765,13 +830,60 @@ local function refreshPartyRows()
   GuiService.SelectedObject=replacement and replacement:FindFirstChild(name)or bodyContent:FindFirstChild('BrowseTab')
  end
 end
+-- Scoped lobby button finish; other menus retain their existing helpers and styling.
+local LOBBY_BUTTON={Radius=5,Outline=3,Drop=5,PressTime=.09,HoverTime=.16,
+ Purple=Color3.fromRGB(65,51,72),Green=Color3.fromRGB(69,83,53),Rust=Color3.fromRGB(98,61,48)}
+local function lobbyButtonFinish(b,faceColor)
+ b.AutoButtonColor=false;b.BorderSizePixel=0;b.BackgroundTransparency=0;b.BackgroundColor3=faceColor;b.Selectable=true
+ for _,v in b:GetChildren()do if v:IsA('UICorner')or v:IsA('UIStroke')or v:IsA('UIGradient')then v:Destroy()end end
+ corners(b,LOBBY_BUTTON.Radius);stroke(b,colors.ink,LOBBY_BUTTON.Outline)
+ local origin=b.Position
+ local shadow=Instance.new('Frame');shadow.Name=b.Name..'Drop';shadow.BorderSizePixel=0;shadow.BackgroundColor3=Color3.fromRGB(19,16,22)
+ shadow.AnchorPoint=b.AnchorPoint;shadow.Position=origin+UDim2.fromOffset(0,LOBBY_BUTTON.Drop);shadow.Size=b.Size;shadow.ZIndex=math.max(0,b.ZIndex-1);shadow.Parent=b.Parent
+ corners(shadow,LOBBY_BUTTON.Radius);stroke(shadow,colors.ink,LOBBY_BUTTON.Outline)
+ -- The glow covers the whole button face, including the area its UIPadding reserves (PLAY's caption strip).
+ local pad=b:FindFirstChildOfClass('UIPadding')
+ local pl,pt=pad and pad.PaddingLeft.Offset or 0,pad and pad.PaddingTop.Offset or 0
+ local pr,pb=pad and pad.PaddingRight.Offset or 0,pad and pad.PaddingBottom.Offset or 0
+ local glow=Instance.new('Frame');glow.Name='SelectedGlow';glow.BackgroundTransparency=1;glow.Position=UDim2.fromOffset(-pl,-pt);glow.Size=UDim2.new(1,pl+pr,1,pt+pb);glow.Parent=b;corners(glow,LOBBY_BUTTON.Radius)
+ local glowRim=stroke(glow,FOCUS_GOLD,3);glowRim.Transparency=1 -- gold, not red (red rule)
+ focusRing(b,LOBBY_BUTTON.Radius)
+ -- Deterministic wear: small low-contrast scratches on the face, never across its label.
+ for i=1,5 do
+  local scratch=Instance.new('Frame');scratch.Name='Wear'..i;scratch.BorderSizePixel=0;scratch.BackgroundColor3=colors.cream;scratch.BackgroundTransparency=.88
+  scratch.AnchorPoint=Vector2.new(.5,.5);scratch.Position=UDim2.fromScale(.12+(i%3)*.35,i%2==0 and .13 or .84);scratch.Size=UDim2.new(.09,0,0,1);scratch.Rotation=i%2==0 and -18 or 12;scratch.Parent=b
+ end
+ local hovered,selected,pressed=false,false,false
+ local motion,colorTween,glowTween
+ local function refresh()
+  if motion then motion:Cancel()end;if colorTween then colorTween:Cancel()end;if glowTween then glowTween:Cancel()end
+  local focus=hovered or selected
+  motion=Tween:Create(b,TweenInfo.new(LOBBY_BUTTON.PressTime),{Position=origin+UDim2.fromOffset(0,pressed and LOBBY_BUTTON.Drop or 0)});motion:Play()
+  colorTween=Tween:Create(b,TweenInfo.new(LOBBY_BUTTON.HoverTime),{BackgroundColor3=focus and faceColor:Lerp(colors.cream,.14)or faceColor});colorTween:Play()
+  glowTween=Tween:Create(glowRim,TweenInfo.new(LOBBY_BUTTON.HoverTime),{Transparency=focus and .3 or 1});glowTween:Play()
+  -- One short, smooth shiver on focus; no repeating flicker or strobe.
+  if preferences.CameraMotion~=false then Tween:Create(b,TweenInfo.new(.09,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut,0,true),{Rotation=focus and .65 or 0}):Play()end
+ end
+ b.MouseEnter:Connect(function()hovered=true;refresh()end)
+ b.MouseLeave:Connect(function()hovered=false;pressed=false;refresh()end)
+ b.SelectionGained:Connect(function()selected=true;refresh()end)
+ b.SelectionLost:Connect(function()selected=false;pressed=false;refresh()end)
+ local function pressInput(input)
+  return input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch or input.KeyCode==Enum.KeyCode.ButtonA
+ end
+ b.InputBegan:Connect(function(input)if pressInput(input)then pressed=true;refresh()end end)
+ b.InputEnded:Connect(function(input)if pressInput(input)then pressed=false;refresh()end end)
+ b.Activated:Connect(function()pressed=false;refresh()end)
+ b:GetPropertyChangedSignal('Visible'):Connect(function()shadow.Visible=b.Visible end)
+ b.Destroying:Connect(function()shadow:Destroy()end)
+end
 local MENU={
- {key='Settings',label='SETTINGS',icon='rbxassetid://137889451723904',tab='Settings'},
- {key='Character',label='CHARACTER',icon='rbxassetid://106304373894739',tab='Character'},
- {key='Tokens',label='TOKENS',icon='rbxassetid://73345115390797',tab='Store',shop='Tokens'},
- {key='Robux',label='SHOP',icon='rbxassetid://112368980987150',tab='Store',shop='Robux'},
- {key='Leaders',label='LEADERS',icon='rbxassetid://96200672828517',tab='Leaders'},
- {key='Guide',label='HOW TO PLAY',icon='rbxassetid://102590344861700',tab='Guide'},
+ {key='Settings',label='SETTINGS',icon='rbxassetid://125816849270898',tab='Settings'},
+ {key='Character',label='CHARACTER',icon='rbxassetid://134740703980338',tab='Character'},
+ {key='Tokens',label='TOKENS',icon='rbxassetid://125439267216921',tab='Store',shop='Tokens'},
+ {key='Robux',label='SHOP',icon='rbxassetid://126379629055315',tab='Store',shop='Robux'},
+ {key='Leaders',label='LEADERS',icon='rbxassetid://81964192209417',tab='Leaders'},
+ {key='Guide',label='HOW TO PLAY',icon='rbxassetid://123355770486667',tab='Guide'},
 }
 local function setMovementBlocked(blocked)
  -- Walking is free in the 3D lobby; it is held only while a menu panel is open (and during a mission load).
@@ -812,6 +924,11 @@ build=function()
  layoutScale=math.min(1.15,(viewport.X-24)/W,(viewport.Y-24)/H)
  -- Left side: 3 x 2 grid of icon buttons, one per destination (Play is the world itself).
  local g=math.clamp(math.min(viewport.X,viewport.Y)/720,.88,1.1) -- icon >= 46 px: touch target floor
+ -- Phones and tablets (owner 2026-10-24): the grid and the Quests bar took a big share of a small screen. Touch
+ -- screens get MENU_TOUCH_SCALE of that, never below MENU_TOUCH_MIN (icons stay about 36 px: still easy to tap).
+ local menuTouch=InputHints.Get()=='touch'
+ if menuTouch then g=math.max(MENU_TOUCH_MIN,g*MENU_TOUCH_SCALE)end
+ g*=TV_SCALE -- consoles: the grid and Quests bar size themselves (ConsoleUiScale skips MenuGrid / NavQuests)
  local cellW,cellH,icon=62*g,76*g,52*g
  local grid=Instance.new('Frame');grid.Name='MenuGrid';grid.BackgroundTransparency=1;grid.AnchorPoint=Vector2.new(0,0);grid.Position=UDim2.fromOffset(12,12+(compact and 0 or 30));grid.Size=UDim2.fromOffset(3*cellW,2*cellH);grid.Parent=gui
  for i,entry in ipairs(MENU)do
@@ -819,48 +936,36 @@ build=function()
   local active=tab==entry.tab and(entry.shop==nil or shopTab==entry.shop)
   local b=Instance.new('ImageButton');b.Name='Nav'..entry.key;b.Image=entry.icon;b.BackgroundTransparency=1;b.AutoButtonColor=false
   b.Position=UDim2.fromOffset(col*cellW+(cellW-icon)/2,row*cellH);b.Size=UDim2.fromOffset(icon,icon);b.Selectable=true;b.Parent=grid
-  local sel=Instance.new('Frame');sel.BackgroundTransparency=1;sel.Size=UDim2.fromScale(1,1);corners(sel,16);stroke(sel,colors.cream,4);b.SelectionImageObject=sel
-  local ring=Instance.new('UIStroke');ring.Thickness=active and 4 or 0;ring.Color=colors.cream;ring.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;ring.Parent=b;corners(b,16)
-  local scale=Instance.new('UIScale');scale.Parent=b
-  b.MouseEnter:Connect(function()Tween:Create(scale,TweenInfo.new(.1),{Scale=1.08}):Play()end)
-  b.MouseLeave:Connect(function()Tween:Create(scale,TweenInfo.new(.1),{Scale=1}):Play()end)
-  local label=Instance.new('TextLabel');label.Name='Label';label.BackgroundTransparency=1;label.Position=UDim2.fromOffset(col*cellW,row*cellH+icon+2);label.Size=UDim2.fromOffset(cellW,cellH-icon-6)
-  label.Font=Enum.Font.FredokaOne;label.Text=entry.label;label.TextScaled=true;label.TextColor3=active and colors.green or colors.cream;label.TextStrokeColor3=colors.ink;label.TextStrokeTransparency=.2;label.Parent=grid
-  local cap=Instance.new('UITextSizeConstraint');cap.MaxTextSize=math.floor(13*g+.5);cap.MinTextSize=8;cap.Parent=label
+  local symbol=Instance.new('ImageLabel');symbol.Name='Icon';symbol.BackgroundTransparency=1;symbol.Image=entry.icon;symbol.Size=UDim2.fromScale(.88,.88);symbol.Position=UDim2.fromScale(.06,.02);symbol.Parent=b;b.Image=''
+  local palette={LOBBY_BUTTON.Purple,LOBBY_BUTTON.Green,LOBBY_BUTTON.Rust}
+  lobbyButtonFinish(b,palette[(i-1)%3+1])
+  local label=Instance.new('TextLabel');label.Name='Label';label.BackgroundTransparency=1;label.Position=UDim2.new(0,-(cellW-icon)/2,1,3);label.Size=UDim2.fromOffset(cellW,cellH-icon-6)
+  label.Font=Enum.Font.Antique;label.Text=entry.label;label.TextScaled=true;label.TextColor3=active and colors.green or colors.cream;label.TextStrokeColor3=colors.ink;label.TextStrokeTransparency=.2;label.Parent=b
+  local cap=Instance.new('UITextSizeConstraint');cap.MaxTextSize=math.floor(14*g+.5);cap.MinTextSize=menuTouch and 6 or 9;cap.Parent=label -- touch: the smaller cells fit 'CHARACTER' / 'HOW TO PLAY' only below 9
   b.Activated:Connect(function()Audio.Play('UiClick');if active then closePanel()else openTab(entry.tab,entry.shop)end end)
  end
  do
   local log=p.PlayerGui:FindFirstChild('QuestLog')
   if log and not p:GetAttribute('MissionActive')then
-   local qh=math.floor(46*g+.5)
+   local touchQ=InputHints.Get()=='touch' -- phones: a shorter bar, tucked under the grid, keeps the left thumb area free for moving and sprinting
+   local qh=touchQ and math.floor(36*g+.5) or math.max(44,math.floor(46*g+.5)) -- touch: was a flat 34
    local q=Instance.new('TextButton');q.Name='NavQuests';q.Text='';q.AutoButtonColor=false;q.Selectable=true;q.BorderSizePixel=0
-   q.Position=UDim2.fromOffset(12,grid.Position.Y.Offset+grid.Size.Y.Offset+6);q.Size=UDim2.fromOffset(grid.Size.X.Offset,qh)
-   q.BackgroundColor3=Color3.fromRGB(40,22,60);q.Parent=gui;corners(q,qh//2)
-   local qg=Instance.new('UIGradient');qg.Color=ColorSequence.new(Color3.fromRGB(120,60,210),Color3.fromRGB(230,110,30));qg.Parent=q
-   local rim=Instance.new('UIStroke');rim.Name='Rim';rim.Thickness=3;rim.Color=colors.ink;rim.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;rim.Parent=q
-   local sel=Instance.new('Frame');sel.BackgroundTransparency=1;sel.Size=UDim2.fromScale(1,1);corners(sel,qh//2);stroke(sel,colors.cream,4);q.SelectionImageObject=sel
-   local ic=Instance.new('ImageLabel');ic.Name='Icon';ic.BackgroundTransparency=1;ic.Image='rbxassetid://117099885163223';ic.Size=UDim2.fromOffset(qh+6,qh+6)
+   q.Position=UDim2.fromOffset(12,grid.Position.Y.Offset+grid.Size.Y.Offset+(touchQ and 0 or 6));q.Size=UDim2.fromOffset(grid.Size.X.Offset,qh)
+   q.Parent=gui;lobbyButtonFinish(q,LOBBY_BUTTON.Purple)
+   local rim=q:FindFirstChildOfClass('UIStroke')
+   local ic=Instance.new('ImageLabel');ic.Name='Icon';ic.BackgroundTransparency=1;ic.Image='rbxassetid://76180641217444';ic.Size=UDim2.fromOffset(qh+6,qh+6)
    ic.AnchorPoint=Vector2.new(0,.5);ic.Position=UDim2.new(0,-4,.5,0);ic.Parent=q
    local ql=Instance.new('TextLabel');ql.Name='Label';ql.BackgroundTransparency=1;ql.Position=UDim2.fromOffset(qh+2,0);ql.Size=UDim2.new(1,-qh-10,1,0)
-   ql.Font=Enum.Font.FredokaOne;ql.Text='QUESTS';ql.TextScaled=true;ql.TextColor3=colors.cream;ql.TextStrokeColor3=colors.ink;ql.TextStrokeTransparency=.1;ql.Parent=q
+   ql.Font=Enum.Font.Antique;ql.Text='QUESTS';ql.TextScaled=true;ql.TextColor3=colors.cream;ql.TextStrokeColor3=colors.ink;ql.TextStrokeTransparency=.1;ql.Parent=q
    local qc=Instance.new('UITextSizeConstraint');qc.MaxTextSize=math.floor(22*g);qc.MinTextSize=10;qc.Parent=ql
    local badge=Instance.new('TextLabel');badge.Name='Badge';badge.AnchorPoint=Vector2.new(.5,.5);badge.Position=UDim2.new(1,-4,0,4);badge.Size=UDim2.fromOffset(24*g,24*g)
-   badge.BackgroundColor3=Color3.fromRGB(232,36,72);badge.Font=Enum.Font.FredokaOne;badge.TextScaled=true;badge.TextColor3=colors.cream;badge.ZIndex=3;badge.Parent=q
+   badge.BackgroundColor3=Color3.fromRGB(232,36,72);badge.Font=Enum.Font.FredokaOne;badge.TextScaled=true;badge.TextColor3=colors.cream;badge.ZIndex=1;badge.Parent=q -- layer 1: on its Quests button, but under menu panels opened over it
    corners(badge,999);stroke(badge,colors.cream,2)
-   local scale=Instance.new('UIScale');scale.Parent=q
    local function refresh()
     local n=tonumber(p:GetAttribute('QuestReadyCount'))or 0
-    badge.Visible=n>0;badge.Text=tostring(math.min(n,99));rim.Color=n>0 and Color3.fromRGB(255,208,86)or colors.ink
+    badge.Visible=n>0;badge.Text=tostring(math.min(n,99));rim.Color=n>0 and Color3.fromRGB(160,139,96)or colors.ink
    end
    refresh();p:GetAttributeChangedSignal('QuestReadyCount'):Connect(function()if q.Parent then refresh()end end)
-   task.spawn(function()
-    while q.Parent do
-     if (tonumber(p:GetAttribute('QuestReadyCount'))or 0)>0 then rim.Transparency=(math.sin(os.clock()*4)+1)*.25 else rim.Transparency=0 end
-     task.wait(1/20)
-    end
-   end)
-   q.MouseEnter:Connect(function()Tween:Create(scale,TweenInfo.new(.1),{Scale=1.05}):Play()end)
-   q.MouseLeave:Connect(function()Tween:Create(scale,TweenInfo.new(.1),{Scale=1}):Play()end)
    q.Activated:Connect(function()
     Audio.Play('UiClick');if tab then tab=nil;build()end
     local ev=log:FindFirstChild('Open');if ev then ev:Fire('daily')end
@@ -893,7 +998,8 @@ renderPartyBar=function()
  local old=gui:FindFirstChild('PartyBar');if old then old:Destroy()end
  if not party or p:GetAttribute('MissionActive')then return end
  local n=party.size;local w,h=280,74+n*24
- local bar=frame(gui,'PartyBar',0,0,w,h,colors.panel);local grid=gui:FindFirstChild('MenuGrid');local qb=gui:FindFirstChild('NavQuests');local top=qb and(qb.Position.Y.Offset+qb.Size.Y.Offset+10)or grid and(grid.Position.Y.Offset+grid.Size.Y.Offset+14)or 200
+ local bar=frame(gui,'PartyBar',0,0,w,h,colors.panel);local grid=gui:FindFirstChild('MenuGrid');local qb=gui:FindFirstChild('NavQuests');local top=grid and grid.Position.Y.Offset or 12 -- the left buttons hide while in a circle, so the run panel takes their place
+ if grid then grid.Visible=false end;if qb then qb.Visible=false end
  if InputHints.Get()=='touch'then bar.AnchorPoint=Vector2.new(.5,0);bar.Position=UDim2.new(.5,0,0,8) -- phones/tablets: top centre, clear of the thumbstick and jump button
  else bar.AnchorPoint=Vector2.new(0,0);bar.Position=UDim2.fromOffset(12,top)end -- left, under the menu grid: straight down from the icons on a controller
  local owner=party.owner==p.UserId
@@ -901,27 +1007,42 @@ renderPartyBar=function()
  text(bar,'Access',(party.passwordRequired and 'PASSWORD'or party.friendsOnly and 'FRIENDS ONLY'or 'PUBLIC')..'  |  '..#party.members..' / '..n,12,28,w-24,18,12,colors.green)
  for i=1,n do
   local member=party.members[i]
-  text(bar,'Member'..i,member and(member.display..(member.id==party.owner and '  (host)'or''))or 'Waiting for someone to step in...',16,44+(i-1)*24,w-32,22,13,member and colors.cream or colors.muted)
+  text(bar,'Member'..i,member and(member.display..(member.id==party.owner and '  (host)'or''))or (owner and 'Open spot: a friend walks into your circle' or 'Open spot'),member and 42 or 16,44+(i-1)*24,member and w-58 or w-32,22,13,member and colors.cream or colors.muted)
+  if member then -- rank icon left of each member (Codex party-row patch)
+   local who=Players:GetPlayerByUserId(member.id)
+   local icon=Instance.new('ImageLabel');icon.Name='RankBadge'..i;icon.BackgroundTransparency=1;icon.ScaleType=Enum.ScaleType.Fit
+   icon.Position=UDim2.fromOffset(16,45+(i-1)*24);icon.Size=UDim2.fromOffset(22,22)
+   icon.Image=who and require(RS:WaitForChild('RankCatalog')).Get(who:GetAttribute('RR')).icon or '';icon.Parent=bar
+  end
  end
  local full=#party.members>=n
- startButton=button(bar,'StartGame',owner and(full and 'START GAME'or 'WAITING FOR PLAYERS')or 'HOST STARTS',12,h-34,w-110,28,function()
+ -- The host can start any time: a 3-slot run started with 2 people plays as a 2-player run.
+ startButton=button(bar,'StartGame',owner and(full and 'START GAME'or('START NOW  '..#party.members..'/'..n))or 'HOST WILL START',12,h-34,w-110,28,function()
   if not owner then notice('Your host starts the game.');return end
   request('start',{},function(data)notice(type(data)=='string'and data or 'Getting ready...')end)
- end,owner and full)
+ end,owner)
  button(bar,'LeaveParty','LEAVE',w-92,h-34,80,28,function()request('leave',{},function(data)party=data.party;build();notice('You left the run.')end)end)
  local s=math.clamp((workspace.CurrentCamera and math.min(workspace.CurrentCamera.ViewportSize.X,workspace.CurrentCamera.ViewportSize.Y)or 720)/720,.7,1.05)
  if InputHints.Get()~='touch'then s*=1.35 end -- PC / Xbox: a bigger panel on the left, easy to read and to reach with a controller
  scaleTree(bar,s)
 end
-local menuMusic=Instance.new('Sound');menuMusic.Name='MainMenuMusic';menuMusic.SoundId='rbxassetid://135892273807834';menuMusic.Volume=.03;menuMusic.Looped=true;menuMusic.PlaybackSpeed=1;menuMusic.Parent=game.SoundService
+-- Party rows show each member's rank icon: redraw the open bar when any member's RR changes.
+local function watchRank(other)
+ other:GetAttributeChangedSignal('RR'):Connect(function()
+  if party and gui and gui:FindFirstChild('PartyBar')then for _,m in party.members do if m.id==other.UserId then renderPartyBar();return end end end
+ end)
+end
+for _,other in Players:GetPlayers()do watchRank(other)end
+Players.PlayerAdded:Connect(watchRank)
+local menuMusic=Instance.new('Sound');menuMusic.Name='MainMenuMusic';menuMusic.SoundId='rbxassetid://125926708472079';menuMusic.Volume=.03;menuMusic.Looped=true;menuMusic.PlaybackSpeed=1;menuMusic.Parent=game.SoundService
 local function applySettings()
  local master=p:GetAttribute('LocalSettingMasterVolume') or p:GetAttribute('SettingMasterVolume') or preferences.MasterVolume
  local effects=p:GetAttribute('LocalSettingEffectsVolume') or p:GetAttribute('SettingEffectsVolume') or preferences.EffectsVolume
  local music=p:GetAttribute('LocalSettingMenuMusicVolume') or p:GetAttribute('SettingMenuMusicVolume') or preferences.MenuMusicVolume
  local sfx=game.SoundService:FindFirstChild('GameplaySFX');if sfx then sfx.Volume=2.4*master*effects end
  local ui=game.SoundService:FindFirstChild('GameplayUI');if ui then ui.Volume=2.25*master*effects end
- local worldMusic=game.SoundService:FindFirstChild('GameplayMusic');if worldMusic then worldMusic.Volume=2.4*master*effects end
- menuMusic.Volume=.6*master*music
+ local worldMusic=game.SoundService:FindFirstChild('GameplayMusic');if worldMusic then worldMusic.Volume=.6*master*effects end -- level music quarter of the old level (2.4 -> 1.2 -> .6, 2026-10-25)
+ menuMusic.Volume=.5*master*music -- owner 2026-10-25: too low at .28 (was .4 before that)
 end
 for key in pairs(defaults)do p:GetAttributeChangedSignal('Setting'..key):Connect(function()preferences[key]=p:GetAttribute('Setting'..key);p:SetAttribute('LocalSetting'..key,nil);applySettings()end);p:GetAttributeChangedSignal('LocalSetting'..key):Connect(applySettings)end
 applySettings()
@@ -963,6 +1084,7 @@ local function mission()
 end
 
 event.OnClientEvent:Connect(function(action,data)
+ if action=='bench'or action=='booth'then local relay=script:FindFirstChild('SocialRelay');if relay then relay:Fire(action,data)end;return end
  if action=='response'then
   if not pending[data.id]then return end
   local callback=pending[data.id];pending[data.id]=nil;local quiet=quietRequests[data.id];quietRequests[data.id]=nil
@@ -982,7 +1104,8 @@ event.OnClientEvent:Connect(function(action,data)
    local label=text(card,'Message','+'..earned..' TOKENS',12,8,256,48,19,colors.green);label.TextXAlignment=Enum.TextXAlignment.Center
    task.delay(4,function()if toast.Parent then toast:Destroy()end end)
   end)end
-  if gui and gui.Enabled and(tab=='Store'or tab=='Leaders')then render()end
+  -- A purchase reply already redrew the store with this same snapshot; a second full redraw right after hitched (2026-10-24).
+  if gui and gui.Enabled and(tab=='Store'or tab=='Leaders')and os.clock()>=storeQuietUntil then render()end
  elseif action=='state'then
   party=data.party;if data.preferences then preferences=data.preferences end
   if party and(party.status=='Starting'or party.status=='Teleporting')then beginMissionLoading(party.countdown)
@@ -1098,7 +1221,7 @@ p:GetAttributeChangedSignal('LobbyCircle'):Connect(function()
  task.delay(1,function()
   local i=ownSetupClaim()
   if i and not hostCircle and not party and not p:GetAttribute('MissionActive')then
-   hostCircle=i;hostStep='save';chosenSave=nil;saveOpen=true;saveSlots=nil;chosenSize=1;friendsOnly=false;privatePassword=false
+   hostCircle=i;hostStep='save';chosenSave=nil;saveOpen=true;saveSlots=nil;chosenSize=p:GetAttribute('BenchBuddy')and 4 or 1;friendsOnly=p:GetAttribute('BenchFriends')==true;privatePassword=false
    tab='Play';build()
   end
  end)
@@ -1142,9 +1265,9 @@ task.spawn(function()
  local pill=Instance.new('Frame');pill.AnchorPoint=Vector2.new(.5,0);pill.Position=UDim2.new(.5,0,0,6);pill.Size=UDim2.fromOffset(300,40);pill.BackgroundColor3=Color3.fromRGB(22,20,30);pill.BackgroundTransparency=1;pill.BorderSizePixel=0;pill.Parent=nudge
  Instance.new('UICorner',pill).CornerRadius=UDim.new(1,0)
  local hints=require(game:GetService('ReplicatedStorage'):WaitForChild('InputHints'))
- local touch=hints.Get()=='touch'or UIS.TouchEnabled and not UIS.KeyboardEnabled
+ local touch=hints.Get()=='touch'
  -- phones/tablets: bottom centre above the stamina bar, so the lobby sign ('walk into a glowing circle') stays readable
- if touch then pill.AnchorPoint=Vector2.new(.5,1);pill.Position=UDim2.new(.5,0,1,-46)end
+ if touch then pill.AnchorPoint=Vector2.new(.5,1);pill.Position=UDim2.new(.5,0,1,-122)end -- above the (two-line) PLAY button, clear of it on phones
  local scale=Instance.new('UIScale');scale.Scale=touch and .85 or 1;scale.Parent=pill
  local stroke=Instance.new('UIStroke');stroke.Color=Color3.fromRGB(150,120,200);stroke.Transparency=1;stroke.Thickness=1;stroke.Parent=pill
  local label=Instance.new('TextLabel');label.BackgroundTransparency=1;label.Position=UDim2.fromOffset(16,0);label.Size=UDim2.new(1,-130,1,0);label.Font=Enum.Font.GothamMedium;label.TextSize=14;label.TextColor3=Color3.fromRGB(225,218,240);label.TextTransparency=1;label.TextXAlignment=Enum.TextXAlignment.Left;label.Text='Scarier with friends';label.Parent=pill
@@ -1164,4 +1287,330 @@ task.spawn(function()
  fade(true)
  task.delay(12,dismiss)
  p:GetAttributeChangedSignal('MissionActive'):Connect(function()if p:GetAttribute('MissionActive')==true then dismiss()end end)
+end)
+-- Buddy Bench (2026-10-26): alone on the lobby bench for 3 s (tutorial done) a pill offers SAVE A SEAT; INVITE opens
+-- Roblox's own invite prompt on that press only (CanSendGameInviteAsync first). A friend who joins from it gets a
+-- glowing path to the saved seat (server 'bench' message via SocialRelay). Ticks while two players count down.
+do local socialRelay=Instance.new('BindableEvent');socialRelay.Name='SocialRelay';socialRelay.Parent=script -- no new top-level local (200-local limit)
+task.spawn(function()
+ local Social=game:GetService('SocialService');local Http=game:GetService('HttpService');local CAS=game:GetService('ContextActionService')
+ local studioRun=game:GetService('RunService'):IsStudio()
+ local gui=Instance.new('ScreenGui');gui.Name='BenchInvite';gui.ResetOnSpawn=false;gui.DisplayOrder=41;gui.ScreenInsets=Enum.ScreenInsets.CoreUISafeInsets;gui.Enabled=false;gui.Parent=p.PlayerGui
+ local pill=Instance.new('Frame');pill.Name='Pill';pill.AnchorPoint=Vector2.new(.5,0);pill.Position=UDim2.new(.5,0,0,6);pill.Size=UDim2.fromOffset(330,44)
+ pill.BackgroundColor3=Color3.fromRGB(22,20,30);pill.BackgroundTransparency=.25;pill.BorderSizePixel=0;pill.Parent=gui
+ Instance.new('UICorner',pill).CornerRadius=UDim.new(1,0)
+ local stroke=Instance.new('UIStroke');stroke.Color=Color3.fromRGB(255,190,90);stroke.Transparency=.4;stroke.Parent=pill
+ local touch=InputHints.Get()=='touch'
+ if touch then pill.AnchorPoint=Vector2.new(.5,1);pill.Position=UDim2.new(.5,0,1,-122)end -- same slot as the invite nudge, above PLAY
+ local scale=Instance.new('UIScale');scale.Scale=touch and .85 or 1;scale.Parent=pill
+ local label=Instance.new('TextLabel');label.BackgroundTransparency=1;label.Position=UDim2.fromOffset(16,0);label.Size=UDim2.new(1,-124,1,0);label.Font=Enum.Font.GothamMedium;label.TextSize=14
+ label.TextColor3=Color3.fromRGB(240,228,210);label.TextXAlignment=Enum.TextXAlignment.Left;label.Text='Save this seat for a friend';label.Parent=pill
+ local invite=Instance.new('TextButton');invite.Name='Invite';invite.AnchorPoint=Vector2.new(1,.5);invite.Position=UDim2.new(1,-8,.5,0);invite.Size=UDim2.fromOffset(100,34)
+ invite.BackgroundColor3=Color3.fromRGB(240,160,60);invite.AutoButtonColor=true;invite.Font=Enum.Font.GothamBold;invite.TextSize=13;invite.TextColor3=Color3.new(1,1,1);invite.Text='INVITE';invite.Parent=pill
+ Instance.new('UICorner',invite).CornerRadius=UDim.new(1,0)
+ local function benchSeat()
+  local c=p.Character;local h=c and c:FindFirstChildOfClass('Humanoid');local seat=h and h.SeatPart
+  return seat and seat.Parent and seat.Parent.Name=='BuddyBench'and seat or nil
+ end
+ local function sendInvite()
+  if not gui.Enabled then return end
+  local options=Instance.new('ExperienceInviteOptions')
+  options.PromptMessage='Come sit with me on the Buddy Bench!'
+  options.LaunchData=Http:JSONEncode({bench=p.UserId})
+  pcall(function()Social:PromptGameInvite(p,options)end);Audio.Play('UiOpen')
+ end
+ invite.Activated:Connect(sendInvite)
+ local bound=false
+ local function bind(on)
+  if on==bound then return end;bound=on
+  if on then CAS:BindActionAtPriority('BenchInvite',function(_,st)if st==Enum.UserInputState.Begin then sendInvite()end;return Enum.ContextActionResult.Sink end,false,2050,Enum.KeyCode.ButtonX)
+  else CAS:UnbindAction('BenchInvite')end
+ end
+ socialRelay.Event:Connect(function(kind,data)
+  if kind~='bench'or type(data)~='table'or typeof(data.seat)~='Instance'or not data.seat:IsA('BasePart')then return end
+  notice(tostring(data.by)..' saved you a seat on the Buddy Bench!');Audio.Play('PartyHorn')
+  local c=p.Character or p.CharacterAdded:Wait();local r=c:WaitForChild('HumanoidRootPart',10);if not r then return end
+  local a0=Instance.new('Attachment');a0.Name='BenchGuideFrom';a0.Parent=r
+  local a1=Instance.new('Attachment');a1.Name='BenchGuideTo';a1.Position=Vector3.new(0,.6,0);a1.Parent=data.seat
+  local beam=Instance.new('Beam');beam.Name='BenchGuide';beam.Attachment0=a0;beam.Attachment1=a1;beam.Width0=.6;beam.Width1=.6;beam.FaceCamera=true;beam.LightEmission=1
+  beam.Color=ColorSequence.new(Color3.fromRGB(255,214,90),Color3.fromRGB(45,181,165));beam.Transparency=NumberSequence.new(.25);beam.Parent=r
+  local t=os.clock()
+  while os.clock()-t<120 and beam.Parent and data.seat.Parent and benchSeat()==nil do task.wait(.25)end
+  beam:Destroy();a0:Destroy();a1:Destroy()
+ end)
+ local aloneSince,allowed,lastTick=nil,nil,0
+ while script.Parent do
+  task.wait(.25)
+  local seat=benchSeat();local model=seat and seat.Parent
+  local other=model and model:FindFirstChild(seat.Name=='BenchSeat1'and'BenchSeat2'or'BenchSeat1')
+  local alone=other~=nil and other.Occupant==nil and p:GetAttribute('TutorialDone')==true and p:GetAttribute('LobbyPartyId')==nil and p:GetAttribute('MissionActive')~=true
+  if alone then aloneSince=aloneSince or os.clock()else aloneSince=nil;allowed=nil end
+  if aloneSince and os.clock()-aloneSince>=3 and allowed==nil then
+   local ok,can=pcall(function()return Social:CanSendGameInviteAsync(p)end)
+   allowed=studioRun or(ok and can==true) -- Studio has no invite service; show the pill so tests can see it
+  end
+  local show=aloneSince~=nil and os.clock()-aloneSince>=3 and allowed==true
+  invite.Text=InputHints.Get()=='pad'and'(X) INVITE'or'INVITE'
+  gui.Enabled=show;bind(show)
+  local bench=workspace:FindFirstChild('LobbyWorld')and workspace.LobbyWorld:FindFirstChild('BuddyBench')
+  local ends=bench and bench:GetAttribute('PairEndsAt')
+  if ends and(seat or(p.Character and p.Character:FindFirstChild('HumanoidRootPart')and(p.Character.HumanoidRootPart.Position-bench:GetPivot().Position).Magnitude<20))then
+   local left=math.ceil(ends-workspace:GetServerTimeNow())
+   if left>0 and left~=lastTick then lastTick=left;Audio.Play('ClockTick')end
+  else lastTick=0 end
+ end
+end)
+end
+-- PLAY button: bottom centre of the lobby while you are not in a run. One press (click, tap or gamepad Y) puts you on
+-- the nearest free circle, which opens the normal host setup (save, players, privacy). Joining someone is done by walking into their circle.
+-- First-time players (TutorialDone false) see it pulse.
+task.spawn(function()
+ local RS=game:GetService('ReplicatedStorage');local CAS=game:GetService('ContextActionService')
+ local hints=require(RS:WaitForChild('InputHints'));local ls=RS:WaitForChild('LobbyState')
+ local qp=Instance.new('ScreenGui');qp.Name='QuickPlay';qp.ResetOnSpawn=false;qp.DisplayOrder=35;qp.ScreenInsets=Enum.ScreenInsets.CoreUISafeInsets;qp.Enabled=false;qp.Parent=p.PlayerGui
+ local row=Instance.new('Frame');row.Name='Row';row.AnchorPoint=Vector2.new(.5,1);row.BackgroundTransparency=1;row.Size=UDim2.fromOffset(220,66);row.Parent=qp
+ local rowScale=Instance.new('UIScale');rowScale.Parent=row
+ -- Two lines: the action, and under it a small caption saying what it does.
+ local function bigButton(name,label,color,size,caption)
+  local holder=Instance.new('Frame');holder.Name=name;holder.BackgroundTransparency=1;holder.AnchorPoint=Vector2.new(.5,.5);holder.Size=UDim2.fromOffset(size,66);holder.Parent=row
+  local b=Instance.new('TextButton');b.Name='Button';b.Size=UDim2.fromScale(1,1);b.AutoButtonColor=true;b.BackgroundColor3=color;b.BorderSizePixel=0;b.Font=Enum.Font.FredokaOne;b.TextColor3=Color3.fromRGB(16,26,18);b.Text=label;b.Parent=holder
+  local lift=Instance.new('UIPadding');lift.PaddingBottom=UDim.new(0,16);lift.Parent=b
+  local cap=Instance.new('TextLabel');cap.Name='Caption';cap.BackgroundTransparency=1;cap.AnchorPoint=Vector2.new(.5,0);cap.Position=UDim2.new(.5,0,1,-4);cap.Size=UDim2.new(1,-16,0,18);cap.Font=Enum.Font.FredokaOne;cap.TextSize=14;cap.TextColor3=b.TextColor3;cap.Text=caption;cap.TextTruncate=Enum.TextTruncate.AtEnd;cap.Parent=b
+  Instance.new('UICorner',b).CornerRadius=UDim.new(0,14)
+  local s=Instance.new('UIStroke');s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;s.Color=Color3.fromRGB(8,18,22);s.Thickness=3;s.Parent=b
+  local pop=Instance.new('UIScale');pop.Name='Pop';pop.Parent=holder
+  return holder,b,pop
+ end
+ local playHolder,play,playPop=bigButton('Play','PLAY',LOBBY_BUTTON.Green,220,'start your own run');play.TextSize=30
+ lobbyButtonFinish(play,LOBBY_BUTTON.Green);play.Font=Enum.Font.Antique;play.TextColor3=colors.cream;play.Caption.TextColor3=colors.cream;play.Caption.Font=Enum.Font.Antique
+ local badge=Instance.new('TextLabel');badge.Name='PadKey';badge.AnchorPoint=Vector2.new(0,.5);badge.Position=UDim2.new(0,12,.5,0);badge.Size=UDim2.fromOffset(30,30);badge.BackgroundColor3=Color3.fromRGB(8,18,22);badge.TextColor3=Color3.fromRGB(255,214,90);badge.Font=Enum.Font.FredokaOne;badge.TextSize=18;badge.Text='Y';badge.Parent=play
+ Instance.new('UICorner',badge).CornerRadius=UDim.new(1,0)
+ local badgeNudge=Instance.new('UIPadding');badgeNudge.PaddingRight=UDim.new(0,2);badgeNudge.Parent=badge -- FredokaOne's Y sits a hair right of centre (same as the revive PadY)
+ -- PlayStation pads have a triangle where Xbox has Y: same badge, gold outline triangle (same as RecoveryRoundClient PadY).
+ local function padGlyph(label,nudge)
+  if InputHints.Glyph(label,'ButtonY')then return end -- PlayStation: the real triangle button art
+  local ok,name=pcall(function()return UIS:GetStringForKeyCode(Enum.KeyCode.ButtonY)end)
+  local ps=ok and name=='ButtonTriangle'
+  label.Text=ps and utf8.char(0x25B3)or'Y';label.Font=ps and Enum.Font.BuilderSansBold or Enum.Font.FredokaOne;label.TextSize=ps and 20 or 18;nudge.PaddingRight=UDim.new(0,ps and 0 or 2)
+  -- triangle: dark frog green and raised a little; Y: gold
+  label.TextColor3=ps and Color3.fromRGB(58,110,48)or Color3.fromRGB(255,214,90);nudge.PaddingBottom=UDim.new(0,ps and 3 or 0)
+ end
+ local function circles()local w=workspace:FindFirstChild('LobbyWorld');return w and w:FindFirstChild('Circles')end
+ local function eligible(m,want)
+  local pad=m:FindFirstChild('Pad')
+  return pad~=nil and pad:IsA('BasePart')and string.match(m.Name,'^Circle%d+$')~=nil and m:GetAttribute('Status')==want and(want=='Free'or m:GetAttribute('Access')=='Public')
+ end
+ local busyUntil=0
+ local function go(kind)
+  if os.clock()<busyUntil or party or hostCircle or launching or p:GetAttribute('LobbyPartyId')or p:GetAttribute('LobbyCircle')then return end
+  local folder=circles();local char=p.Character
+  local r=char and char:FindFirstChild('HumanoidRootPart');local hum=char and char:FindFirstChildOfClass('Humanoid')
+  if not folder or not r or not hum or hum.Health<=0 then return end
+  busyUntil=os.clock()+3
+  -- The server picks, reserves and moves us to an empty circle far from other players; the setup menu opens on the reply.
+  request('circle.quick',{},function(data)
+   busyUntil=0
+   if party or launching or type(data)~='table'or type(data.circle)~='number'then return end
+   hostCircle=data.circle;hostPending=false;hostStep='save';chosenSave=nil;saveOpen=true;saveSlots=nil;chosenSize=1;friendsOnly=false;privatePassword=false
+   tab='Play';build()
+  end,false,function()busyUntil=0 end)
+ end
+ play.Activated:Connect(function()go('solo')end)
+ -- Rank card right of PLAY, in the mastery card look: rank icon and name, RR toward the next rank above the right end
+ -- of a white bar. RR comes from the server's player attribute; the formula is never shown.
+ local Ranks=require(RS:WaitForChild('RankCatalog'))
+ -- Preload every rank icon (own rank-ups, other players' name tags) so none pops in late.
+ task.spawn(function()
+  local icons={};for _,t in Ranks.Tiers do if t.icon~=''then local img=Instance.new('ImageLabel');img.Image=t.icon;table.insert(icons,img)end end
+  pcall(function()game:GetService('ContentProvider'):PreloadAsync(icons)end)
+  for _,img in icons do img:Destroy()end
+ end)
+ local card=Instance.new('Frame');card.Name='RankCard';card.AnchorPoint=Vector2.new(0,.5);card.Position=UDim2.new(1,14,.5,0);card.Size=UDim2.fromOffset(260,76)
+ card.BackgroundTransparency=1;card.Visible=false;card.Parent=row
+ -- Card face (owner 2026-10-25, second pass): the lobby buttons' chrome, shared with the mastery card (HudCardStyle).
+ local cardStyle=require(RS:WaitForChild('HudCardStyle')).Build(card,'RANK')
+ local socket=cardStyle.socket
+ local RANK_CORNER_MARGIN,RANK_CORNER_TOP=12,8 -- computer / console: the card's gap from the top-right corner
+ local CARD_SCALE=TV_SCALE -- the whole card at 100% (shrinks toward its anchor, so it stays beside / above PLAY)
+ local cardScale=Instance.new('UIScale');cardScale.Scale=CARD_SCALE;cardScale.Parent=card
+ local rim=Instance.new('UIStroke');rim.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;rim.Thickness=2;rim.Enabled=false;rim.Parent=card -- the plank art has its own glowing edge
+ local seasonPeak=Instance.new('ImageLabel');seasonPeak.Name='SeasonPeak';seasonPeak.BackgroundTransparency=1;seasonPeak.ScaleType=Enum.ScaleType.Fit;seasonPeak.Position=UDim2.fromOffset(50,44);seasonPeak.Size=UDim2.fromOffset(20,20);seasonPeak.ZIndex=4;seasonPeak.Visible=false;seasonPeak.Parent=card
+ local iconHolder=Instance.new('Frame');iconHolder.Name='Icon';iconHolder.BackgroundTransparency=1;iconHolder.AnchorPoint=Vector2.new(.5,.5);iconHolder.Position=UDim2.fromScale(.5,.5);iconHolder.Size=UDim2.fromOffset(40,40);iconHolder.ZIndex=2;iconHolder.Parent=socket
+ local function label(name,font,size,color,align)
+  local t=Instance.new('TextLabel');t.Name=name;t.BackgroundTransparency=1;t.Font=font;t.TextSize=size;t.TextColor3=color;t.TextXAlignment=align;t.TextStrokeTransparency=.35;t.TextStrokeColor3=Color3.fromRGB(8,10,14);t.TextTruncate=Enum.TextTruncate.AtEnd;t.Parent=card
+  return t
+ end
+ local rankName=label('RankName',Enum.Font.FredokaOne,13,Color3.new(1,1,1),Enum.TextXAlignment.Left);rankName.Position=UDim2.fromOffset(80,13);rankName.Size=UDim2.new(1,-104,0,16)
+ local rrText=label('RR',Enum.Font.FredokaOne,11,Color3.fromRGB(150,255,220),Enum.TextXAlignment.Right)
+ -- Under the bar: how much RR is left to the next rank, by name ("326 RR TO SEEKER III").
+ local nextText=label('NextRank',Enum.Font.FredokaOne,10,Color3.fromRGB(214,214,224),Enum.TextXAlignment.Left);nextText.TextScaled=true
+ local nextMax=Instance.new('UITextSizeConstraint');nextMax.MaxTextSize=10;nextMax.MinTextSize=7;nextMax.Parent=nextText
+ local function sliceBar(parent,name,image)
+  local i=Instance.new('ImageLabel');i.Name=name;i.BackgroundTransparency=1;i.Image=image;i.ScaleType=Enum.ScaleType.Slice;i.SliceCenter=Rect.new(48,23,464,25);i.SliceScale=.25;i.Parent=parent
+  return i
+ end
+ local bar=sliceBar(card,'Bar','rbxassetid://90113844865582');bar.Position=UDim2.fromOffset(80,49);bar.Size=UDim2.new(1,-104,0,12)
+ local fill=sliceBar(bar,'Fill','rbxassetid://137368694415108');fill.Size=UDim2.fromScale(0,1)
+ local minFill=Instance.new('UISizeConstraint');minFill.MinSize=Vector2.new(24,0);minFill.Parent=fill -- keeps both rounded ends
+ local shownTier
+ local function drawRank()
+  local rr=p:GetAttribute('RR')
+  if type(rr)~='number'then card.Visible=false;return end
+  card.Visible=true
+  local r=Ranks.Get(rr);local lo,hi=Ranks.Progress(rr)
+  rankName.Text=string.upper(r.name);rankName.TextColor3=r.color
+  local master=p:GetAttribute('RRMaster')==true -- every mastery done: gold rim
+  rim.Color=master and Color3.fromRGB(255,214,110)or r.color;rim.Thickness=master and 3 or 2
+  local peak=Ranks.Tiers[p:GetAttribute('RRSeasonPeakTier')or 0] -- last season's peak rank, small in the icon corner
+  seasonPeak.Image=peak and peak.icon or '';seasonPeak.Visible=peak~=nil
+  rrText.Text=math.floor(rr)..' RR'
+  nextText.Text=hi and((hi-math.floor(rr))..' RR TO '..string.upper(Ranks.Get(hi+1).name))or'TOP RANK REACHED'
+  local frac=hi and math.clamp((rr-lo)/math.max(1,hi-lo),0,1)or 1
+  fill.Visible=frac>0;game:GetService('TweenService'):Create(fill,TweenInfo.new(.45,Enum.EasingStyle.Quad),{Size=UDim2.fromScale(frac,1)}):Play()
+  if shownTier~=r.tier then
+   shownTier=r.tier;iconHolder:ClearAllChildren()
+   cardStyle.SetAccent(r.color:Lerp(Color3.new(1,1,1),.15)) -- tag, inner line and socket ring take the rank's colour
+   if r.icon~=''then
+    local img=Instance.new('ImageLabel');img.BackgroundTransparency=1;img.Size=UDim2.fromScale(1,1);img.Image=r.icon;img.Parent=iconHolder
+   else -- coloured gem until the rank icons are uploaded
+    local gem=Instance.new('Frame');gem.AnchorPoint=Vector2.new(.5,.5);gem.Position=UDim2.fromScale(.5,.5);gem.Size=UDim2.fromOffset(26,26);gem.Rotation=45;gem.BackgroundColor3=r.color;gem.BorderSizePixel=0;gem.Parent=iconHolder
+    Instance.new('UICorner',gem).CornerRadius=UDim.new(0,5)
+    local s=Instance.new('UIStroke');s.Color=Color3.fromRGB(8,12,16);s.Thickness=3;s.Parent=gem
+   end
+  end
+ end
+ p:GetAttributeChangedSignal('RR'):Connect(drawRank);drawRank()
+ p:GetAttributeChangedSignal('RRMaster'):Connect(drawRank);p:GetAttributeChangedSignal('RRSeasonPeakTier'):Connect(drawRank)
+ local Tween=game:GetService('TweenService');local pulse=nil
+ local bound=false
+ local function bind(on)
+  if on==bound then return end;bound=on
+  if on then CAS:BindActionAtPriority('LobbyQuickPlay',function(_,st)if st==Enum.UserInputState.Begin then go('solo')end;return Enum.ContextActionResult.Sink end,false,2000,Enum.KeyCode.ButtonY)
+  else CAS:UnbindAction('LobbyQuickPlay')end
+ end
+ while true do
+  task.wait(.2)
+  local inLobby=(ls:GetAttribute('Mode')=='Menu'or p:GetAttribute('ReturnedToLobby')==true)and p:GetAttribute('MissionActive')~=true and p:GetAttribute('LobbyReady')==true
+  local idle=not party and not hostCircle and not launching and tab==nil and not p:GetAttribute('LobbyPartyId')and not p:GetAttribute('LobbyCircle')
+   and not(p:GetAttribute('VanShopOpen')==true or p:GetAttribute('AppearanceOpen')==true or p:GetAttribute('QuestLogOpen')==true)
+  local show=inLobby and idle
+  qp.Enabled=show;bind(show)
+  -- In a circle (owner 2026-10-25): the left-side buttons and the mastery card step aside for the circle's menu and come
+  -- back when the player leaves it. InLobbyCircle is local; QuestLogClient and the admin buttons read it too.
+  local circling=inLobby and(party~=nil or hostCircle~=nil or p:GetAttribute('LobbyPartyId')~=nil or p:GetAttribute('LobbyCircle')~=nil)
+  if p:GetAttribute('InLobbyCircle')~=(circling or nil)then p:SetAttribute('InLobbyCircle',circling or nil)end
+  if gui then for _,name in {'MenuGrid','NavQuests'}do local o=gui:FindFirstChild(name);if o and o.Visible==circling then o.Visible=not circling end end end
+  if show then
+   local device=hints.Get();local touch=device=='touch'
+   badge.Visible=device=='pad';if badge.Visible then padGlyph(badge,badgeNudge)end
+   playHolder.Position=UDim2.new(.5,0,.5,0)
+   rowScale.Scale=touch and .85 or TV_SCALE
+   -- touch: a narrower rank card so it ends before the jump button
+   local ch=touch and 58 or 84 -- card height (phones: compact card, owner 2026-10-22)
+   local s=ch/84
+   card.Size=UDim2.fromOffset(touch and 186 or 330,ch) -- 330: same width as the mastery card it stacks with
+   rankName.TextSize=touch and 12 or math.floor(14*s);rrText.TextSize=touch and 10 or math.floor(11*s);nextMax.MaxTextSize=math.floor(10*s);nextText.Visible=not touch
+   local sock=cardStyle.Layout(ch,ch+4) -- round socket 7 px in; the RANK tag sits in the top border over the text column
+   local ic=math.floor(sock*.74);iconHolder.Size=UDim2.fromOffset(ic,ic)
+   seasonPeak.Position=UDim2.fromOffset(math.floor(7+sock*.78-10),math.floor(ch/2+sock*.28-10)) -- on the socket's lower-right rim
+   -- Beside PLAY when it fits; above PLAY on narrow screens (Quest headsets, small windows). Touch keeps the jump
+   -- button clear; VR keeps the card inside the headset's central view (the panel edges blur).
+   local W=qp.AbsoluteSize.X;local vr=game:GetService('VRService').VREnabled
+   local reserve=touch and 135 or vr and W*.08+16 or 16
+   if touch then
+    -- Phones: always right of PLAY, shrunk to fit the gap before the jump button.
+    card.AnchorPoint=Vector2.new(0,.5);card.Position=UDim2.new(1,10,.5,0)
+    local room=(W-reserve)-(W/2+(110+10)*rowScale.Scale)
+    cardScale.Scale=W>0 and math.clamp(room/(card.Size.X.Offset*rowScale.Scale),.6,1)or 1
+   elseif not vr then
+    -- Computer and console (owner 2026-10-25): the card sits in the very top-right corner; the mastery card
+    -- (QuestLogClient MasteryHud) moves down under it.
+    cardScale.Scale=CARD_SCALE;card.Parent=qp
+    card.AnchorPoint=Vector2.new(1,0);card.Position=UDim2.new(1,-RANK_CORNER_MARGIN,0,RANK_CORNER_TOP)
+   else
+    cardScale.Scale=CARD_SCALE
+    if W>0 and W/2+(110+14+card.Size.X.Offset*CARD_SCALE)*rowScale.Scale>W-reserve then card.AnchorPoint=Vector2.new(.5,1);card.Position=UDim2.new(.5,0,0,-10)
+    else card.AnchorPoint=Vector2.new(0,.5);card.Position=UDim2.new(1,14,.5,0)end
+   end
+   if (touch or vr)and card.Parent~=row then card.Parent=row end
+   -- Rows: rank name with the player's RR on the right / the bar / RR left to the next rank.
+   local x=ch+4;local right=math.floor(14*s);local rrW=math.floor(78*s) -- text starts right after the socket
+   rankName.Position=UDim2.fromOffset(x,math.floor(14*s));rankName.Size=UDim2.new(1,-x-right-rrW,0,math.floor(16*s))
+   rrText.Position=UDim2.new(1,-right-rrW,0,math.floor(14*s));rrText.Size=UDim2.fromOffset(rrW,math.floor(16*s))
+   bar.Position=UDim2.fromOffset(x,math.floor((touch and 40 or 36)*s));bar.Size=UDim2.new(1,-x-right,0,math.max(10,math.floor(12*s)))
+   nextText.Position=UDim2.fromOffset(x,math.floor(54*s));nextText.Size=UDim2.new(1,-x-right,0,math.floor(13*s))
+   if touch then -- phones: the rank name gets the whole top row, the RR sits under the bar
+    rankName.Size=UDim2.new(1,-x-right,0,math.floor(16*s))
+    rrText.Position=UDim2.fromOffset(x,math.floor(56*s));rrText.Size=UDim2.new(1,-x-right,0,11);rrText.TextXAlignment=Enum.TextXAlignment.Left
+   else rrText.TextXAlignment=Enum.TextXAlignment.Right end
+   row.Position=UDim2.new(.5,0,1,touch and -46 or -24) -- touch: above the centred stamina bar
+  end
+  local wantPulse=show and p:GetAttribute('TutorialDone')==false
+  if wantPulse and not pulse then pulse=Tween:Create(playPop,TweenInfo.new(.6,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut,-1,true),{Scale=1.07});pulse:Play()
+  elseif not wantPulse and pulse then pulse:Cancel();pulse=nil;playPop.Scale=1 end
+ end
+end)
+-- Lobby guide: a yellow line on the floor from you to the nearest free circle while the PLAY button shows.
+task.spawn(function()
+ local PFS=game:GetService('PathfindingService')
+ local qp=p:WaitForChild('PlayerGui'):WaitForChild('QuickPlay')
+ local folder=Instance.new('Folder');folder.Name='LobbyCircleGuide'
+ local YELLOW=Color3.fromRGB(255,214,60)
+ local LIFT=Vector3.new(0,.12,0) -- just above the floor so it never z-fights
+ local segs,dots={},{}
+ local function piece(list,i,shape)
+  local s=list[i]
+  if not s then
+   s=Instance.new('Part');s.Name='Guide';s.Shape=shape;s.Anchored=true;s.CanCollide=false;s.CanQuery=false;s.CanTouch=false;s.CastShadow=false
+   s.Material=Enum.Material.Neon;s.Color=YELLOW;s.Transparency=.15;s.Parent=folder;list[i]=s
+  end
+  return s
+ end
+ local function trim(list,n)for i=#list,n+1,-1 do list[i]:Destroy();list[i]=nil end end
+ local function draw(points)
+  local n=0
+  for i=1,#points-1 do
+   local a,b=points[i],points[i+1];local len=(b-a).Magnitude
+   if len>.05 then
+    n+=1;local s=piece(segs,n,Enum.PartType.Block);s.Size=Vector3.new(.5,.06,len);s.CFrame=CFrame.lookAt((a+b)/2,b)
+    local d=piece(dots,n,Enum.PartType.Cylinder);d.Size=Vector3.new(.06,.5,.5);d.CFrame=CFrame.new(b)*CFrame.Angles(0,0,math.pi/2) -- rounds the corners
+   end
+  end
+  trim(segs,n);trim(dots,n)
+ end
+ local function nearestFree(r)
+  local w=workspace:FindFirstChild('LobbyWorld');local c=w and w:FindFirstChild('Circles');if not c then return nil,nil end
+  local best,bestD=nil,math.huge
+  for _,m in c:GetChildren()do
+   local pad=m:FindFirstChild('Pad')
+   if pad and pad:IsA('BasePart')and string.match(m.Name,'^Circle%d+$')and m:GetAttribute('Status')=='Free'then
+    local d=(pad.Position-r.Position).Magnitude;if d<bestD then best,bestD=pad,d end
+   end
+  end
+  return best,bestD
+ end
+ local path=PFS:CreatePath({AgentRadius=1.5,AgentHeight=5,AgentCanJump=true})
+ local lastPad,lastFrom,lastAt=nil,Vector3.zero,0
+ while true do
+  task.wait(.25)
+  local char=p.Character;local r=char and char:FindFirstChild('HumanoidRootPart');local hum=char and char:FindFirstChildOfClass('Humanoid')
+  local pad,dist
+  if qp.Enabled and r and hum then pad,dist=nearestFree(r)end
+  if not pad or dist<6 then
+   folder.Parent=nil;lastPad=nil
+  else
+   folder.Parent=workspace
+   if pad~=lastPad or(r.Position-lastFrom).Magnitude>1.5 or os.clock()-lastAt>2 then
+    lastPad,lastFrom,lastAt=pad,r.Position,os.clock()
+    local feet=r.Position-Vector3.new(0,hum.HipHeight+r.Size.Y/2,0)
+    local goal=pad.Position+Vector3.new(0,pad.Size.Y/2,0)
+    local points={feet+LIFT}
+    local ok=pcall(function()path:ComputeAsync(feet,goal)end)
+    if ok and path.Status==Enum.PathStatus.Success then
+     for i,wp in path:GetWaypoints()do if i>1 then table.insert(points,wp.Position+LIFT)end end
+    else table.insert(points,goal+LIFT)end
+    if pad.Parent and qp.Enabled then draw(points)end
+   end
+  end
+ end
 end)

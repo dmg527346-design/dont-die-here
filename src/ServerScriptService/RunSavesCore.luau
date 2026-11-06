@@ -43,15 +43,36 @@ local function kindList(values)
  end end
  return result
 end
+-- Run boosts (GearShopServer BOOSTS): id -> tier bought this run. Kept in the run save so a reload keeps them.
+local function boostMap(values)
+ local result={}
+ if type(values)=='table'then for id,tier in pairs(values)do
+  if text(id,32)and #id>0 and integer(tier,0,10)and tier>0 then result[id]=tier end
+ end end
+ return result
+end
+-- RoadTripStickers (WorldB 2026-10-27): one sticker per level cleared this run {k=map kind, l=level, g=gems 1-3, v=that level's sale}.
+-- Additive: older saves load with an empty list.
+local function stickerList(values)
+ local result={}
+ if type(values)=='table'then for _,entry in ipairs(values)do
+  if #result>=40 then break end
+  if type(entry)=='table'and text(entry.k,32)and #entry.k>0 and integer(entry.l,1,1000000)and integer(entry.g,1,3)and integer(entry.v or 0,0,MAX_COUNT)then
+   table.insert(result,{k=entry.k,l=entry.l,g=entry.g,v=entry.v or 0})
+  end
+ end end
+ return result
+end
 local function slot(value)
  if type(value)~='table'or not text(value.name,40)or #value.name==0 or not integer(value.round,1,1000000)or not integer(value.quota,0,MAX_COUNT)or not integer(value.sold,0,MAX_COUNT)then return nil end
  if not text(value.runId or '',160)or not text(value.mapKind or '',64)or not integer(value.createdAt,0,MAX_COUNT)or not integer(value.updatedAt,0,MAX_COUNT)then return nil end
  local seed=value.mapSeed
  if seed~=nil and seed~=false and not integer(seed,0,MAX_ID)then return nil end
- -- Chances: failed runs left before the slot is deleted (older saves without the field get the full 3).
- local chances=value.chances;if chances==nil then chances=3 end
+ -- Chances: failed runs left before the slot is deleted (owner 2026-10-29: 2 per save; older saves get 2, and saves with 3 left are cut to 2).
+ local chances=value.chances;if chances==nil then chances=2 end
  if not integer(chances,1,3)then return nil end
- return {chances=chances,name=value.name,round=value.round,quota=value.quota,sold=value.sold,runId=value.runId or '',mapKind=value.mapKind or '',mapSeed=seed or false,createdAt=value.createdAt,updatedAt=value.updatedAt,members=members(value.members),bank=integer(value.bank,0,MAX_COUNT)and value.bank or 0,gear=gearList(value.gear),mapsSeen=kindList(value.mapsSeen)}
+ chances=math.min(chances,2)
+ return {chances=chances,name=value.name,round=value.round,quota=value.quota,sold=value.sold,runId=value.runId or '',mapKind=value.mapKind or '',mapSeed=seed or false,createdAt=value.createdAt,updatedAt=value.updatedAt,members=members(value.members),bank=integer(value.bank,0,MAX_COUNT)and value.bank or 0,gear=gearList(value.gear),boosts=boostMap(value.boosts),mapsSeen=kindList(value.mapsSeen),stickers=stickerList(value.stickers)}
 end
 function M.Reconcile(old)
  if old~=nil and type(old)~='table'then return nil,'Invalid run-save profile.'end
@@ -98,7 +119,7 @@ function M.Apply(old,op)
   if d.slots[i]then return nil,'Choose an empty slot.'end
   if not text(op.name,40)or #op.name==0 or not op.name:find('%S')then return nil,'Use a save name of 1-40 characters.'end
   d.generations[i]+=1;d.usedSlots[i]=false;d.leases[key]=nil
-  d.slots[i]={chances=3,name=op.name,round=1,quota=0,sold=0,runId='',mapKind='',mapSeed=false,createdAt=op.now,updatedAt=op.now,members={},mapsSeen={}}
+  d.slots[i]={chances=2,name=op.name,round=1,quota=0,sold=0,runId='',mapKind='',mapSeed=false,createdAt=op.now,updatedAt=op.now,members={},mapsSeen={}}
  elseif op.kind=='delete'then
   if leased(d,i,op.now)then return nil,'This slot is in use.'end
   d.slots[i]=false;d.generations[i]+=1;d.usedSlots[i]=false;d.leases[key]=nil
@@ -137,19 +158,19 @@ function M.Apply(old,op)
    local input=op.snapshot
    if type(input)~='table'then return nil,'Invalid run snapshot.'end
    local oldSlot=d.slots[i]
-   local clean=slot({chances=oldSlot.chances,name=oldSlot.name,createdAt=oldSlot.createdAt,updatedAt=op.now,round=input.round,quota=input.quota,sold=input.sold,runId=input.runId,mapKind=input.mapKind,mapSeed=input.mapSeed,members=input.members,bank=input.bank,gear=input.gear,mapsSeen=input.mapsSeen})
+   local clean=slot({chances=oldSlot.chances,name=oldSlot.name,createdAt=oldSlot.createdAt,updatedAt=op.now,round=input.round,quota=input.quota,sold=input.sold,runId=input.runId,mapKind=input.mapKind,mapSeed=input.mapSeed,members=input.members,bank=input.bank,gear=input.gear,boosts=input.boosts,mapsSeen=input.mapsSeen,stickers=input.stickers})
    if not clean then return nil,'Invalid run snapshot.'end
    d.slots[i]=clean;lease.expiresAt=op.expiresAt
   else
    -- One failed attempt at the saved level costs one chance; failId makes a retried write count once.
    if not text(op.failId,160)or #op.failId==0 then return nil,'Invalid failure id.'end
    if lease.lastFail==op.failId then return d,'Already counted.'end
-   local left=(d.slots[i].chances or 3)-1
+   local left=(d.slots[i].chances or 2)-1
    if left>0 then d.slots[i].chances=left
    else
-    -- Last chance gone: the slot becomes a brand-new save (same name, level 1, 3 chances) and this mission keeps writing to it.
+    -- Last chance gone: the slot becomes a brand-new save (same name, level 1, 2 chances) and this mission keeps writing to it.
     local old=d.slots[i]
-    d.slots[i]={chances=3,name=old.name,round=1,quota=0,sold=0,runId='',mapKind='',mapSeed=false,createdAt=op.now,updatedAt=op.now,members={},mapsSeen={}}
+    d.slots[i]={chances=2,name=old.name,round=1,quota=0,sold=0,runId='',mapKind='',mapSeed=false,createdAt=op.now,updatedAt=op.now,members={},mapsSeen={}}
    end
    lease.lastFail=op.failId;lease.expiresAt=op.expiresAt
   end
@@ -164,13 +185,13 @@ function M.Apply(old,op)
    local input=op.snapshot
    if type(input)~='table'then return nil,'Invalid run snapshot.'end
    local oldSlot=d.slots[i]
-   local clean=slot({chances=oldSlot.chances,name=oldSlot.name,createdAt=oldSlot.createdAt,updatedAt=op.now,round=input.round,quota=input.quota,sold=input.sold,runId=input.runId,mapKind=input.mapKind,mapSeed=input.mapSeed,members=input.members,bank=input.bank,gear=input.gear,mapsSeen=input.mapsSeen})
+   local clean=slot({chances=oldSlot.chances,name=oldSlot.name,createdAt=oldSlot.createdAt,updatedAt=op.now,round=input.round,quota=input.quota,sold=input.sold,runId=input.runId,mapKind=input.mapKind,mapSeed=input.mapSeed,members=input.members,bank=input.bank,gear=input.gear,boosts=input.boosts,mapsSeen=input.mapsSeen,stickers=input.stickers})
    if not clean then return nil,'Invalid run snapshot.'end
    d.slots[i]=clean;d.leases[key]=nil
   elseif op.kind=='release'then d.leases[key]=nil
   else
    -- A failed run uses one chance; the slot keeps its last good save until the chances run out.
-   local left=(d.slots[i].chances or 3)-1
+   local left=(d.slots[i].chances or 2)-1
    if left>0 then d.slots[i].chances=left;d.leases[key]=nil
    else
     d.slots[i]=false;d.generations[i]+=1;d.usedSlots[i]=false;d.leases[key]=nil
@@ -183,7 +204,7 @@ function M.Apply(old,op)
 end
 function M.NormalizeSnapshot(value)
  if type(value)~='table'then return nil,'Invalid run snapshot.'end
- local clean=slot({name='Run',createdAt=0,updatedAt=0,round=value.round,quota=value.quota,sold=value.sold,runId=value.runId,mapKind=value.mapKind,mapSeed=value.mapSeed,members=value.members,bank=value.bank,gear=value.gear,mapsSeen=value.mapsSeen})
+ local clean=slot({name='Run',createdAt=0,updatedAt=0,round=value.round,quota=value.quota,sold=value.sold,runId=value.runId,mapKind=value.mapKind,mapSeed=value.mapSeed,members=value.members,bank=value.bank,gear=value.gear,boosts=value.boosts,mapsSeen=value.mapsSeen,stickers=value.stickers})
  return clean,not clean and 'Invalid run snapshot.'or nil
 end
 function M.Snapshot(old)

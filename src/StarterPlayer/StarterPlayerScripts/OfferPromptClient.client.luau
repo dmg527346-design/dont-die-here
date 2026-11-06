@@ -105,6 +105,8 @@ local function layout()
   if device()=='touch'or(UIS.TouchEnabled and v.Y<500)then
    -- Phones: straight above the quota bar (it may reach up into the top inset; that is intended).
    top=math.floor(panelTop-CARD_H-6)
+   -- No room above it (the quota sits at the very top on phones): go just under it instead of off screen.
+   if top<2 then top=math.floor(panelTop+panel.AbsoluteSize.Y+6)end
   else
    top=math.floor(panelTop+panel.AbsoluteSize.Y+6)
   end

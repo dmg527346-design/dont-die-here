@@ -69,17 +69,28 @@ local Progress=require(script.Parent.ProgressService)
 local Quest=require(script.Parent.QuestService)
 local RunSaves=require(script.Parent.RunSavesService)
 local studio=Run:IsStudio()
+local LOCAL_REVIEW=studio and game.PlaceId==0 and game.GameId==0
+local STUDIO_MEMORY=LOCAL_REVIEW or game:GetService('RunService'):IsStudio()and workspace:GetAttribute('StudioDataStores')~=true -- Studio playtests keep saves in memory: stopping during a DataStore call hangs Studio. Workspace StudioDataStores=true tests real saves
 local private=game.PrivateServerId~='' and game.PrivateServerOwnerId==0
 local event=RS:WaitForChild('LobbyEvent')
 local state=RS:WaitForChild('LobbyState')
 Players.CharacterAutoLoads=false
 state:SetAttribute('Mode',private and 'Mission' or 'Menu')
+-- Mission server: build the cursed item meshes while the party is still teleporting and loading the map, not after it arrives.
+-- Starts once the map is generated, so it never slows MapGen down.
+if private then task.spawn(function()
+ local map=workspace:WaitForChild('Mansion',math.huge);while map:GetAttribute('Ready')~=true do map:GetAttributeChangedSignal('Ready'):Wait()end
+ local ok,err=pcall(function()require(game.ServerStorage:WaitForChild('CursedBlenderHydration')).Build()end);if not ok then warn('[LobbyServer] item mesh prewarm: '..tostring(err))end
+end)end
 state:SetAttribute('LobbyCapacity',Access.LobbyCapacity)
 state:SetAttribute('LobbyPopulation',0)
 state:SetAttribute('PrivatePartyOnly',true)
-local records=Memory:GetSortedMap('HorrorParties_v1')
-local sessions=Memory:GetSortedMap('HorrorMissionSessions_v1')
-local prefStore=game:GetService('DataStoreService'):GetDataStore('HorrorPreferences_v1')
+local records,sessions,prefStore
+if not STUDIO_MEMORY then
+ records=Memory:GetSortedMap('HorrorParties_v1')
+ sessions=Memory:GetSortedMap('HorrorMissionSessions_v1')
+ prefStore=game:GetService('DataStoreService'):GetDataStore('HorrorPreferences_v1')
+end
 local localRecords,owned,preferences,revisions,friends,limits,busy={},{},{},{},{},{},{}
 local launchContexts={}
 local lobbyTransfers={}
@@ -87,6 +98,10 @@ local job=studio and 'studio' or game.JobId
 -- Server-owned local circle reservations; attributes are presentation only.
 local CIRCLE_COUNT,SETUP_SECONDS=20,180
 local circleSlots,claims={},{}
+-- PlayerMetricsServer's funnel session rides along in teleport data so one sitting stays one funnel session.
+local function metricsCarry(list)
+ local m={};for _,q in list do q:SetAttribute('MetricsTeleportAt',os.clock());local id=q:GetAttribute('MetricsSession');if type(id)=='string'then m[tostring(q.UserId)]={s=id,f=q:GetAttribute('MetricsFirst'),t=q:GetAttribute('MetricsStart')}end end;return m
+end
 local function circleModel(index)
  local world=workspace:FindFirstChild('LobbyWorld');local circles=world and world:FindFirstChild('Circles')
  local model=circles and circles:FindFirstChild('Circle'..index)
@@ -140,6 +155,32 @@ local function claimCircle(p,index)
  circleSlots[index]=claim;claims[p]=claim;p:SetAttribute('LobbyCircle',index);publishCircle(index)
  task.delay(SETUP_SECONDS,function()if claims[p]==claim and not claim.record then releaseClaim(p);if p.Parent then event:FireClient(p,'notice','Circle setup expired. Choose a circle again.')end end end)
  return true,{circle=index,status='Setup'}
+end
+-- PLAY button: the server picks and reserves a genuinely empty circle in one step (no race with other players),
+-- as far from everyone else as possible (random among the farthest), and puts the player in it.
+local quickRng=Random.new()
+local function quickCircle(p)
+ if p:GetAttribute('LobbyPartyId')then return false,'Leave your current party first.'end
+ local own=claims[p];if own and circleSlots[own.index]==own then return true,{circle=own.index,status='Setup'}end
+ local char=p.Character;local root=char and char:FindFirstChild('HumanoidRootPart');local hum=char and char:FindFirstChildOfClass('Humanoid')
+ if not root or not hum or hum.Health<=0 then return false,'Wait until you have spawned.'end
+ local others={};for _,q in Players:GetPlayers()do local r=q~=p and q.Character and q.Character:FindFirstChild('HumanoidRootPart');if r then table.insert(others,r.Position)end end
+ local scored={};local best=-1
+ for index=1,CIRCLE_COUNT do
+  local model=circleModel(index);local pad=model and model:FindFirstChild('Pad');local radius=model and model:GetAttribute('Radius')or 6
+  if pad and pad:IsA('BasePart')and not circleSlots[index]then
+   local near=math.huge
+   for _,pos in others do local d=pos-pad.Position;near=math.min(near,Vector3.new(d.X,0,d.Z).Magnitude)end
+   -- Someone standing in or right at the ring: not genuinely empty.
+   if near>radius+4 then table.insert(scored,{index=index,pad=pad,near=near});if near>best then best=near end end
+  end
+ end
+ if #scored==0 then return false,'Every circle is busy. Try again in a moment.'end
+ local pool={};for _,c in scored do if c.near==math.huge or c.near>=best*.85 or c.near>=60 then table.insert(pool,c)end end
+ local pick=pool[quickRng:NextInteger(1,#pool)]
+ local ok,result=claimCircle(p,pick.index);if not ok then return false,result end
+ hum.Sit=false;char:PivotTo(CFrame.new(pick.pad.Position+Vector3.new(0,4,0))*(root.CFrame-root.Position))
+ return true,result
 end
 task.spawn(function()while task.wait(2)do for index=1,CIRCLE_COUNT do publishCircle(index)end end end)
 local function user(p)return {id=p.UserId,name=p.Name,display=p.DisplayName}end
@@ -230,15 +271,17 @@ end
 local function start(p,record)
  if record.owner~=p.UserId then return false,'Only the party owner can start.'end
  if record.status~='Waiting' then return false,'Your party is already starting.'end
- if #record.members~=record.size then return false,'Wait until all '..record.size..' players have joined.'end
+ -- The host may start with any number of members (at least themselves); the run starts with whoever is in the party.
+ if #record.members<1 then return false,'Your party is empty.'end
  local partyPlayers={}
  for _,member in record.members do local other=Players:GetPlayerByUserId(member.id)
   if not other or other:GetAttribute('LobbyPartyId')~=record.id then return false,'A party member is still joining this lobby.'end
   table.insert(partyPlayers,other)
  end
  if studio and #partyPlayers~=#Players:GetPlayers() then return false,'For Studio preview, put everyone in this test server in the same party.'end
+ local memberCount=#partyPlayers
  record=update(record.id,function(current)
-  if not current or current.owner~=p.UserId or current.status~='Waiting' or #current.members~=current.size then return nil end
+  if not current or current.owner~=p.UserId or current.status~='Waiting' or #current.members~=memberCount then return nil end
   current.status='Preparing';return current
  end)
  if not record then return false,'Party changed. Please try again.'end
@@ -263,7 +306,7 @@ local function start(p,record)
   if not ok then RunSaves.CancelLaunch(saveTicket);restoreLaunch(record,'Could not prepare the private server. Please try again.');return false,'Private server service is temporarily unavailable.'end
  end
  record=update(record.id,function(current)
-  if not current or current.status~='Preparing' or #current.members~=current.size then return nil end
+  if not current or current.status~='Preparing' or #current.members~=memberCount then return nil end
   current.status='Starting';current.countdown=workspace:GetServerTimeNow()+3;current.session=sessionId;return current
  end)
  if not record then RunSaves.CancelLaunch(saveTicket);if sessionId then pcall(function()sessions:RemoveAsync(sessionId)end)end;return false,'Launch cancelled because the party changed.'end
@@ -290,7 +333,7 @@ local function start(p,record)
   else
    current.status='Teleporting';write(current);push(current)
    local options=Instance.new('TeleportOptions');options.ReservedServerAccessCode=code
-   options:SetTeleportData({missionSession=sessionId,missionToken=launchToken})
+   options:SetTeleportData({missionSession=sessionId,missionToken=launchToken,metrics=metricsCarry(partyPlayers)})
    for _,member in partyPlayers do launchContexts[member]={options=options,attempts=0,record=current}end
    local ok=pcall(function()Teleport:TeleportAsync(game.PlaceId,partyPlayers,options)end)
    if not ok then RunSaves.CancelLaunch(saveTicket);for _,member in partyPlayers do launchContexts[member]=nil end;restoreLaunch(current,'Teleport failed. Your party is still here; try again.')end
@@ -313,12 +356,16 @@ local function handle(p,action,data)
  if action=='progress'then Progress.Load(p);return true,{progress=Progress.Snapshot(p)}end
  if action=='setShowHauntedTag'then return Progress.SetShowHauntedTag(p,type(data)=='boolean'and data or data.show)end
  if action=='leaderboard'then return Progress.BoardFor(p,data.category)end
+ if action=='crewRecord'then return Progress.CrewRecord(p)end
  if action=='purchase'then return Progress.Purchase(p,data.offer)end
  if action=='appearanceEquip'then return Progress.Equip(p,data.offer,data.slot)end
  if action=='equip'then return false,'Equip cosmetics from Appearance.'end
  if action=='tutorialDone'then return Progress.CompleteTutorial(p)end
+ if action=='introSeen'then return Progress.MarkIntroSeen(p)end
+ if action=='shopTutorialSkip'then return Progress.ShopTutorialAdvance(p,3)end
  if p:GetAttribute('MissionActive') then return false,'You are already in a mission.'end
  if action=='circle.claim' then return claimCircle(p,data.circle)
+ elseif action=='circle.quick' then return quickCircle(p)
  elseif action=='circle.release' then
   if p:GetAttribute('LobbyPartyId')then return false,'Leave your party to release its circle.'end
   releaseClaim(p);return true,{}
@@ -362,6 +409,18 @@ local function handle(p,action,data)
   write(record)
   if not p.Parent or claims[p]~=claim or circleSlots[data.circle]~=claim or os.clock()>=claim.expires then remove(record.id);return false,'Your circle reservation ended.'end
   claim.record=record;owned[record.id]=true;p:SetAttribute('LobbyPartyId',record.id);push(record)
+  -- Buddy Bench: the seat-mate who sat with the host joins as soon as the party exists (they stand in the ring).
+  local buddy=claim.buddy;claim.buddy=nil;p:SetAttribute('BenchBuddy',nil);p:SetAttribute('BenchFriends',nil)
+  if buddy and buddy.Parent==Players and not buddy:GetAttribute('LobbyPartyId')and not buddy:GetAttribute('MissionActive')and nearCircle(buddy,data.circle)then
+   local admitted=update(record.id,function(current)
+    if current and Core.Admit(current,user(buddy),true,current.password)then return current end
+    return nil
+   end)
+   if admitted then
+    record=admitted;releaseClaim(buddy);buddy:SetAttribute('LobbyPartyId',record.id);buddy:SetAttribute('LobbyCircle',record.circle);push(record)
+    event:FireClient(buddy,'notice',"You joined "..p.DisplayName.."'s run from the Buddy Bench.")
+   elseif buddy.Parent then event:FireClient(buddy,'notice','That run is full. Walk into another circle to join someone.')end
+  end
   return true,{party=Core.Snapshot(record)}
  elseif action=='leave' then leave(p);return true,snapshot(p)
  elseif action=='join' or action=='circle.join' then
@@ -395,7 +454,7 @@ local function handle(p,action,data)
   end
   if record.job~=job and not studio then
    local saved,reason=Quest.Flush(p);if not saved then update(record.id,function(current)if current then Core.Remove(current,p.UserId);return current end end);return false,reason end
-   local options=Instance.new('TeleportOptions');options.ServerInstanceId=record.job;options:SetTeleportData({joinParty=record.id})
+   local options=Instance.new('TeleportOptions');options.ServerInstanceId=record.job;options:SetTeleportData({joinParty=record.id,metrics=metricsCarry({p})})
    lobbyTransfers[p]=record.id
    local ok=pcall(function()Teleport:TeleportAsync(game.PlaceId,{p},options)end)
    if not ok then lobbyTransfers[p]=nil;update(record.id,function(current)if current then Core.Remove(current,p.UserId);return current end end);return false,'Could not reach your friendÃ¢â‚¬â„¢s lobby. Try again.'end
@@ -499,7 +558,7 @@ end
 local function lobbySpawn(p,char)
  while lobbyActive(p) and p.Character==char do
   local world=workspace:FindFirstChild('LobbyWorld');local map=workspace:FindFirstChild('Mansion')
-  if world and world:GetAttribute('Ready')==true and (not map or map:GetAttribute('Ready')==true) then break end
+  if world and world:GetAttribute('Ready')==true then break end
   task.wait(.1)
  end
  if not lobbyActive(p) or p.Character~=char then return false end
@@ -522,7 +581,8 @@ local function loadLobbyCharacter(p)
  task.spawn(function()
   while lobbyActive(p) do
    local world=workspace:FindFirstChild('LobbyWorld');local map=workspace:FindFirstChild('Mansion')
-   if world and world:GetAttribute('Ready')==true and (not map or map:GetAttribute('Ready')==true) then break end
+   -- A public lobby never uses the mission map, so the menu does not wait for it to generate (cut ~6 s off joining).
+   if world and world:GetAttribute('Ready')==true and (not map or map:GetAttribute('Ready')==true or not private) then break end
    task.wait(.1)
   end
   if lobbyActive(p) then
@@ -551,6 +611,7 @@ end
 local function lobbyCharacterAdded(p,char)
  task.spawn(function()
   if not lobbyActive(p) or not lobbySpawn(p,char) then return end
+  char:SetAttribute('LobbySpawnReady',true)
   local hum=char:FindFirstChildOfClass('Humanoid');if not hum then return end
   hum.Died:Connect(function()respawnAt[p]=os.clock()+2;task.delay(2,function()if lobbyActive(p) and p.Character==char then loadLobbyCharacter(p)end end)end)
  end)
@@ -633,6 +694,159 @@ local function joined(p)
  end
 end
 Players.PlayerAdded:Connect(joined)
+-- Buddy Bench (2026-10-26): a two-seat bench in the lobby hall (Studio-placed Part LobbyWorld.BuddyBenchSpot).
+-- Two players who sit side by side for 3 s get a run on a free circle: the first sitter hosts (normal setup wizard,
+-- 4 players preset, friends-only preset for Roblox friends) and the seat-mate is admitted when the party opens
+-- (see 'create'). Sitting alone, MainMenuClient offers Roblox's invite prompt ("save a seat"); a friend who joins
+-- from it finds the free seat lit with their name. No reward of its own; the referral reward below is unchanged.
+local BENCH_HOLD,BENCH_SAVE=3,300
+local BENCH_IDLE,BENCH_ONE,BENCH_PAIR,BENCH_SAVED=Color3.fromRGB(45,181,165),Color3.fromRGB(120,230,200),Color3.fromRGB(255,214,90),Color3.fromRGB(255,170,70)
+local bench -- {model,seats,labels,strip,sitAt,saved,pair}
+local function benchSitter(i)
+ local h=bench and bench.seats[i].Occupant
+ return h and Players:GetPlayerFromCharacter(h.Parent)or nil
+end
+local function benchFree(q)
+ return q~=nil and q.Parent==Players and q:GetAttribute('LobbyReady')==true and not q:GetAttribute('MissionActive')
+  and not q:GetAttribute('LobbyPartyId')and not claims[q]and not launchContexts[q]
+end
+local function benchLaunch(host,buddy)
+ for _,q in {host,buddy}do local h=q.Character and q.Character:FindFirstChildOfClass('Humanoid');if h then h.Sit=false end end
+ for _,seat in bench.seats do local w=seat:FindFirstChild('SeatWeld');if w then w:Destroy()end end
+ task.wait(.1)
+ if not benchFree(host)or not benchFree(buddy)then return end
+ local ok,result=quickCircle(host)
+ if not ok then for _,q in {host,buddy}do if q.Parent then event:FireClient(q,'notice',result)end end;return end
+ local claim=claims[host];if not claim then return end
+ local friends=false;pcall(function()friends=isFriend(host,buddy.UserId)end)
+ claim.buddy=buddy
+ host:SetAttribute('BenchBuddy',buddy.UserId);host:SetAttribute('BenchFriends',friends)
+ local conn;conn=host:GetAttributeChangedSignal('LobbyCircle'):Connect(function()
+  if host:GetAttribute('LobbyCircle')==nil then conn:Disconnect();host:SetAttribute('BenchBuddy',nil);host:SetAttribute('BenchFriends',nil)end
+ end)
+ -- The seat-mate stands inside the same ring, so nearCircle() admits them when the party opens.
+ local model=circleModel(result.circle);local pad=model and model:FindFirstChild('Pad')
+ local c=buddy.Character;local r=c and c:FindFirstChild('HumanoidRootPart')
+ if pad and pad:IsA('BasePart')and r then c:PivotTo(CFrame.new(pad.Position+Vector3.new(3,4,0))*(r.CFrame-r.Position))end
+ local t=workspace:GetServerTimeNow();for _,q in {host,buddy}do q:SetAttribute('FaceBeat','grin');q:SetAttribute('FaceBeatUntil',t+3)end -- VoiceMouthClient: two happy faces
+ local strip=bench.strip;if strip then local fx=Instance.new('ParticleEmitter');fx.Texture='rbxasset://textures/particles/sparkles_main.dds';fx.Color=ColorSequence.new(Color3.fromRGB(255,214,90),Color3.fromRGB(45,181,165));fx.LightEmission=.6;fx.Size=NumberSequence.new(.6,.1);fx.Lifetime=NumberRange.new(.6,1.2);fx.Speed=NumberRange.new(5,9);fx.SpreadAngle=Vector2.new(70,70);fx.Rate=0;fx.Parent=strip;fx:Emit(45);game:GetService('Debris'):AddItem(fx,2)end
+ event:FireClient(host,'notice','Bench buddies! Pick your save and '..buddy.DisplayName..' joins your run.')
+ event:FireClient(buddy,'notice','Bench buddies! '..host.DisplayName..' is opening the run for you two.')
+end
+-- A friend arrived from a bench invite (or any referral by a sitter): light the free seat with their name.
+local function benchSave(invitee,inviter,force)
+ if not bench or not invitee.Parent or not inviter.Parent or(invitee==inviter and not force)then return false end
+ for i in bench.seats do
+  local other=3-i
+  if benchSitter(i)==inviter and(bench.seats[other].Occupant==nil or force)then
+   bench.saved[other]={id=invitee.UserId,name=invitee.DisplayName,expires=os.clock()+BENCH_SAVE}
+   event:FireClient(invitee,'bench',{seat=bench.seats[other],by=inviter.DisplayName})
+   if invitee~=inviter then event:FireClient(inviter,'notice',invitee.DisplayName..' is here! The seat next to you is saved for them.')end
+   return true
+  end
+ end
+ return false
+end
+local function benchArrival(q)
+ local t=os.clock();while q.Parent and q:GetAttribute('LobbyReady')~=true and os.clock()-t<20 do task.wait(.5)end
+ local by
+ -- Invite launch data can take a few seconds to appear after the join (Creator Hub, Player invite prompts).
+ for _=1,10 do
+  local ok,join=pcall(function()return q:GetJoinData()end)
+  if ok and type(join)=='table'then
+   local launch=join.LaunchData
+   if type(launch)=='string'and #launch<=200 then
+    local decoded,data=pcall(function()return Http:JSONDecode(launch)end)
+    if decoded and type(data)=='table'then by=tonumber(data.bench)end
+   end
+   by=by or tonumber(join.ReferredByPlayerId)
+  end
+  if by and by>0 then break end
+  task.wait(1)
+ end
+ local inviter=by and by~=q.UserId and Players:GetPlayerByUserId(by)
+ if inviter then benchSave(q,inviter)end
+end
+if not private then
+ Players.PlayerAdded:Connect(function(q)task.spawn(benchArrival,q)end)
+ task.spawn(function()
+  local world=workspace:WaitForChild('LobbyWorld');while world:GetAttribute('Ready')~=true do task.wait(.1)end
+  local spot=world:FindFirstChild('BuddyBenchSpot',true)
+  local kit=game:GetService('ServerStorage'):FindFirstChild('WorldFeatureKit');local template=kit and kit:FindFirstChild('BuddyBench')
+  if not spot or not spot:IsA('BasePart')or not template then warn('[LobbyServer] Buddy Bench skipped: BuddyBenchSpot or WorldFeatureKit.BuddyBench missing');return end
+  local m=template:Clone();m.Name='BuddyBench';m:PivotTo(spot.CFrame);m.Parent=world
+  local seats,labels={},{}
+  for i,x in {-1.65,1.65}do
+   local seat=Instance.new('Seat');seat.Name='BenchSeat'..i;seat.Size=Vector3.new(2.5,.3,1.9);seat.Transparency=1;seat.Anchored=true;seat.CanCollide=false
+   seat.CFrame=spot.CFrame*CFrame.new(x,2,0);seat.Parent=m
+   local gui=Instance.new('BillboardGui');gui.Name='SeatLabel';gui.Size=UDim2.fromOffset(220,44);gui.StudsOffsetWorldSpace=Vector3.new(0,3.6,0);gui.MaxDistance=60;gui.LightInfluence=0;gui.Enabled=false;gui.Parent=seat
+   local t=Instance.new('TextLabel');t.Size=UDim2.fromScale(1,1);t.BackgroundTransparency=1;t.Font=Enum.Font.FredokaOne;t.TextScaled=true;t.TextColor3=Color3.fromRGB(255,226,150);t.TextStrokeTransparency=.3;t.Text='';t.Parent=gui
+   seats[i]=seat;labels[i]=t
+  end
+  bench={model=m,seats=seats,labels=labels,strip=m:FindFirstChild('BuddyBench_neon',true),sitAt={},saved={},pair=nil}
+  for i,seat in seats do seat:GetPropertyChangedSignal('Occupant'):Connect(function()bench.sitAt[i]=seat.Occupant and os.clock()or nil;if seat.Occupant then bench.saved[i]=nil end end)end
+  while m.Parent do
+   task.wait(.25)
+   local now=os.clock();local a,b=benchSitter(1),benchSitter(2)
+   for i in seats do local s=bench.saved[i];if s and(now>s.expires or not Players:GetPlayerByUserId(s.id))then bench.saved[i]=nil end end
+   if benchFree(a)and benchFree(b)then
+    if not bench.pair or bench.pair.a~=a or bench.pair.b~=b then bench.pair={a=a,b=b,at=now};m:SetAttribute('PairEndsAt',workspace:GetServerTimeNow()+BENCH_HOLD)end
+    if now-bench.pair.at>=BENCH_HOLD then
+     local host,buddy=a,b;if(bench.sitAt[2]or now)<(bench.sitAt[1]or now)then host,buddy=b,a end
+     bench.pair=nil;m:SetAttribute('PairEndsAt',nil)
+     task.spawn(benchLaunch,host,buddy)
+    end
+   elseif bench.pair then bench.pair=nil;m:SetAttribute('PairEndsAt',nil)end
+   local left=bench.pair and math.max(0,math.ceil(BENCH_HOLD-(now-bench.pair.at)))or nil
+   if bench.strip then bench.strip.Color=bench.pair and BENCH_PAIR or(a or b)and BENCH_ONE or(bench.saved[1]or bench.saved[2])and BENCH_SAVED or BENCH_IDLE end
+   for i,t in labels do
+    local s=bench.saved[i]
+    local text=left and left>0 and tostring(left)or(s and 'SAVED FOR '..s.name)or nil
+    t.Text=text or '';t.Parent.Enabled=text~=nil
+   end
+  end
+ end)
+end
+if studio then
+ -- Studio-only test surface (no remote): state, and a forced "friend arrived" so one tester can see the saved seat.
+ local hook=Instance.new('BindableFunction');hook.Name='BuddyBenchTest'
+ hook.OnInvoke=function(action,a,b)
+  if action=='state'then
+   return {built=bench~=nil,seats=bench and #bench.seats or 0,pairEndsAt=bench and bench.model:GetAttribute('PairEndsAt'),
+    saved1=bench and bench.saved[1]and bench.saved[1].name,saved2=bench and bench.saved[2]and bench.saved[2].name,
+    sitter1=bench and benchSitter(1)and benchSitter(1).Name,sitter2=bench and benchSitter(2)and benchSitter(2).Name}
+  elseif action=='save'then return benchSave(a,b or a,true)end
+  return false
+ end
+ hook.Parent=game:GetService('ServerStorage')
+end
+-- Friend referrals (Roblox referral links): when an invited player and their inviter are in the same server,
+-- both get 100 tokens. ProgressService/ProgressCore enforce once per invitee and a cap per inviter.
+local referrals={}
+local function noteReferral(p)
+ local ok,join=pcall(function()return p:GetJoinData()end)
+ local by=ok and type(join)=='table'and tonumber(join.ReferredByPlayerId)
+ if by and by>0 and by~=p.UserId then referrals[p]=by end
+end
+Players.PlayerAdded:Connect(noteReferral);for _,p in Players:GetPlayers()do noteReferral(p)end
+Players.PlayerRemoving:Connect(function(p)referrals[p]=nil end)
+task.spawn(function()
+ while task.wait(3)do
+  for invitee,by in referrals do
+   local inviter=Players:GetPlayerByUserId(by)
+   if invitee.Parent==Players and inviter then
+    referrals[invitee]=nil
+    task.spawn(function()
+     if Progress.ReferralReward(invitee,inviter)then
+      local msg='Referral bonus! You and %s each got 100 tokens for playing together.'
+      if invitee.Parent then event:FireClient(invitee,'notice',msg:format(inviter.DisplayName))end
+      if inviter.Parent then event:FireClient(inviter,'notice',msg:format(invitee.DisplayName))end
+     end
+    end)
+   end
+  end
+ end
+end)
 Players.PlayerRemoving:Connect(function(p)
  admittedPlayers[tostring(p.UserId)]=nil
  if not private then
@@ -671,6 +885,7 @@ task.spawn(function()
  end
 end)
 game:BindToClose(function()
+ if game:GetService('RunService'):IsStudio() then return end -- Studio stop: close-time saves can hang the server shutdown
  for id in pairs(owned)do pcall(remove,id)end
  local pending=0
  for _,p in Players:GetPlayers()do pending+=1;task.spawn(function()savePrefs(p);pending-=1 end)end

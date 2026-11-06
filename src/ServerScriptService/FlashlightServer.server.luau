@@ -122,7 +122,7 @@ event.OnServerEvent:Connect(function(player, on, toggled)
 	character:SetAttribute("FlashlightOn", on)
 	local handle = character:FindFirstChild("FlashlightHandle")
 	local sound = handle and handle:FindFirstChildOfClass("Sound")
-	if changed and handle then Audio.Play('FlashlightClick',handle) end
+	if changed then Audio.Play('FlashlightClick',handle,player) end
 end)
 
 local function onPlayer(player)

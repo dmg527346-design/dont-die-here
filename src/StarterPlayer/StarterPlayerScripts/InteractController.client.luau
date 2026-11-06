@@ -1,4 +1,13 @@
 local InputHints=require(game:GetService('ReplicatedStorage'):WaitForChild('InputHints'))
+-- Prompts are key-only (E / X / square) on keyboard and controller: a clickable prompt takes the hidden first-person
+-- mouse when the camera passes over it and stops the player looking around. Touch keeps tap-to-use.
+do
+ local function keyOnly(prompt)prompt.ClickablePrompt=InputHints.Get()=='touch'end
+ local function all()for _,d in workspace:GetDescendants()do if d:IsA('ProximityPrompt')then keyOnly(d)end end end
+ all()
+ workspace.DescendantAdded:Connect(function(d)if d:IsA('ProximityPrompt')then keyOnly(d)end end)
+ InputHints.Changed:Connect(all)
+end
 local missionPlayer=game:GetService('Players').LocalPlayer
 
 -- Interaction client: look at a drawer or wardrobe and press E, X / Square (gamepad), or the phone button.
@@ -35,7 +44,7 @@ local camera = workspace.CurrentCamera
 local GuiService=game:GetService('GuiService')
 local RETICLE_DIAMETER,RETICLE_OPACITY=12,.28
 local event = ReplicatedStorage:WaitForChild("InteractEvent")
-local mansion = workspace:WaitForChild("Mansion")
+local mansion = workspace:WaitForChild("Mansion", math.huge) -- explicit no-timeout wait: same behaviour, no 'Infinite yield possible' warning while the map builds
 while mansion:GetAttribute('Ready')~=true or mansion:GetAttribute('RuntimeReady')~=true do mansion:GetAttributeChangedSignal('RuntimeReady'):Wait() end
 
 local interactive = mansion:WaitForChild("Interactive")
@@ -64,6 +73,7 @@ local grabConfirmed,grabSentAt,grabTries=false,0,0
 local grabTouch
 local endInteraction
 local target -- Model currently aimed at
+local aimPart -- the part the aim ray hit (world features: which safe dial, the handle)
 local hide -- while hidden: {doors, lean, side}
 
 -- sideways input while hidden: A/D or arrows, gamepad left stick, else the humanoid's move direction (phone thumbstick)
@@ -128,9 +138,11 @@ label.Size = UDim2.fromOffset(0, 22)
 label.AutomaticSize = Enum.AutomaticSize.X
 label.BackgroundTransparency = 1
 label.TextColor3 = Color3.fromRGB(230, 225, 215)
-label.TextStrokeTransparency = 1
+label.TextStrokeTransparency = 0 -- black outline: readable over bright loot and lit floors (2026-10-22)
+label.TextStrokeColor3 = Color3.new(0, 0, 0)
 label.Font = Enum.Font.GothamMedium
 label.TextSize = 16
+label.RichText = true
 label.Parent = prompt
 
 local touchButton = Instance.new("TextButton")
@@ -198,7 +210,10 @@ RunService:BindToRenderStep('GameplayCursor',Enum.RenderPriority.Last.Value+2,fu
   panelLook=false
   for o in lookMuted do if o.Parent then o.Interactable=true end end;table.clear(lookMuted)
  end
- lookHint.Visible=panelOpen and playing==true and not panelLook and InputHints.Get()=='kb'
+ -- The hint only on the cosmetics panel (appearance terminal / colour picker), where looking at yourself matters;
+ -- hold-right-click still works on the other panels, it just is not advertised there.
+ local cosmeticsOpen=player:GetAttribute('AppearanceOpen')==true or picker and picker.Visible
+ lookHint.Visible=cosmeticsOpen==true and playing==true and not panelLook and InputHints.Get()=='kb'
  reticle.Visible=playing==true and(not ui or panelLook)
  UserInputService.MouseIconEnabled=not reticle.Visible
  if panelOpen and not panelLook then UserInputService.MouseBehavior=Enum.MouseBehavior.Default end
@@ -256,10 +271,50 @@ local function lobbyAim(screenPoint,device)
  end
  return best
 end
+-- Phones: thumbs aim loosely, so pick the pickup or cart nearest the screen centre inside a wide cone,
+-- within the server's reach and with nothing solid in between.
+local TOUCH_ASSIST_ANGLE=math.rad(35)
+-- Owner 2026-10-29 'make the grab radius simple': on every device, an item within 9.5 studs of you and near the
+-- crosshair is grabbable even when the aim ray just misses it (mouse / pad 14 degrees, phones 35).
+local AIM_ASSIST_ANGLE=math.rad(14)
+local function touchAssist(candidates,origin,look,maxAngle)
+ local root=player.Character and player.Character:FindFirstChild('HumanoidRootPart');if not root then return nil end
+ local best,bestAngle=nil,maxAngle or TOUCH_ASSIST_ANGLE
+ for _,m in candidates do
+  local kind=m:GetAttribute('Kind')
+  if(kind=='pickup'and not m:GetAttribute('FaceOwner')and not m:GetAttribute('ItemWearOwner')and not m:GetAttribute('HeldBy')or kind=='cart')and m.PrimaryPart then
+   local point=kind=='cart'and m.PrimaryPart.Position or m:GetPivot().Position
+   local to=point-origin;local d=to.Magnitude
+   if d>.1 and d<=REACH+3 and(root.Position-m:GetPivot().Position).Magnitude<=9.5 then
+    local angle=math.acos(math.clamp(to.Unit:Dot(look),-1,1))
+    if angle<bestAngle then
+     local block=workspace:Raycast(origin,to,blockParams)
+     if not block or block.Distance+WALL_SLACK>=d then best,bestAngle=m,angle end
+    end
+   end
+  end
+ end
+ return best
+end
+-- Owner 2026-10-29: no taking items out of the cart while you push it or stand at its push handle (RecoveryRoundServer
+-- takeCargo refuses the same); walk round to the side of the basket to take one.
+local CART_HANDLE_ZONE=4
+function cargoBlocked()
+ local root=player.Character and player.Character:FindFirstChild('HumanoidRootPart');if not root then return false end
+ local flat=Vector3.new(1,0,1)
+ for _,c in interactive:GetChildren()do
+  if c:GetAttribute('Kind')=='cart'and c.PrimaryPart then
+   if c:GetAttribute('HeldBy')==player.UserId then return true end
+   local h=c:FindFirstChild('Handle')
+   if h and((root.Position-h.Position)*flat).Magnitude<=CART_HANDLE_ZONE and((root.Position-c.PrimaryPart.Position)*flat).Magnitude>((h.Position-c.PrimaryPart.Position)*flat).Magnitude then return true end
+  end
+ end
+ return false
+end
 local function aim()
  if lobbyMode()then return lobbyAim()end
  for _,m in interactive:GetChildren()do if m:GetAttribute('FaceOwner')==player.UserId then return m end end
-	local candidates={};for _,m in ipairs(interactive:GetChildren()) do if m:GetAttribute('HeldBy')~=player.UserId and keyAccessible(m) then table.insert(candidates,m) end end;moverParams.FilterDescendantsInstances=candidates
+	local candidates={};local noCargo=cargoBlocked();for _,m in ipairs(interactive:GetChildren()) do if m:GetAttribute('HeldBy')~=player.UserId and keyAccessible(m) and not m:GetAttribute('ChoiceDone') and not(noCargo and m:GetAttribute('CargoStored')) then table.insert(candidates,m) end end;moverParams.FilterDescendantsInstances=candidates
 	local origin = camera.CFrame.Position
  local dir = camera.CFrame.LookVector * REACH
  if lobbyMode()then
@@ -273,14 +328,19 @@ local function aim()
   local pickups={};for _,m in candidates do if m:GetAttribute('Kind')=='pickup'and not m:GetAttribute('FaceOwner')and not m:GetAttribute('ItemWearOwner')then table.insert(pickups,m)end end
   moverParams.FilterDescendantsInstances=pickups;hit=workspace:Spherecast(origin,PICKUP_AIM_RADIUS,dir,moverParams)
  end
+ if not hit and not lobbyMode()then
+  local camp=workspace:FindFirstChild('RecoveryCamp');blockParams.FilterDescendantsInstances=camp and {collision,camp} or {collision};blockParams.RespectCanCollide=true
+  local assisted=touchAssist(candidates,origin,camera.CFrame.LookVector,touchMode()and TOUCH_ASSIST_ANGLE or AIM_ASSIST_ANGLE);if assisted then return assisted end
+ end
 	if not hit then return nil end
- local stored={};for _,m in ipairs(interactive:GetChildren()) do if m:GetAttribute('CargoStored') and not m:GetAttribute('HeldBy') then table.insert(stored,m) end end
+ local stored={};for _,m in ipairs(interactive:GetChildren()) do if not noCargo and m:GetAttribute('CargoStored') and not m:GetAttribute('HeldBy') then table.insert(stored,m) end end
  if #stored>0 then local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Include;params.FilterDescendantsInstances=stored;local cargoHit=workspace:Raycast(origin,dir,params);if cargoHit then local first=hit.Instance:FindFirstAncestorOfClass('Model');if first and first:GetAttribute('Kind')=='cart' and (hit.Instance.Name=='BasketSide' or hit.Instance.Name=='BasketEnd' or hit.Instance.Name=='BasketFloor' or hit.Instance.Name=='TopRail' or hit.Instance.Name=='SideRib') then hit=cargoHit end end end
 	local block
  local camp=not lobbyMode() and workspace:FindFirstChild('RecoveryCamp');blockParams.FilterDescendantsInstances=camp and {collision,camp} or {collision}
  blockParams.RespectCanCollide=true
  block = workspace:Raycast(origin, dir, blockParams)
 	if block and block.Distance + WALL_SLACK < hit.Distance then return nil end
+ aimPart=hit.Instance
 	local model = hit.Instance:FindFirstAncestorOfClass("Model")
  if model and model.Parent==interactive then
   if lobbyMode()then local root=player.Character and player.Character:FindFirstChild('HumanoidRootPart');if not root or (root.Position-model.PrimaryPart.Position).Magnitude>8 then return nil end end
@@ -293,6 +353,15 @@ local ItemNames=require(ReplicatedStorage:WaitForChild('CursedCatalog')).Items
 local function promptDevice()
  return InputHints.Get()
 end
+local function escapePrompt(text)
+ return(tostring(text):gsub('&','&amp;'):gsub('<','&lt;'):gsub('>','&gt;'):gsub('"','&quot;'))
+end
+local function heldPrompt(text,name,holdingItem)
+ if not holdingItem or not name or name==''then return escapePrompt(text)end
+ local first,last=text:find(name,1,true)
+ if not first then return escapePrompt(text)end
+ return escapePrompt(text:sub(1,first-1))..'<font color="#A7E38A">'..escapePrompt(name)..'</font>'..escapePrompt(text:sub(last+1))
+end
 local function displayName(model)
  local name=model:GetAttribute('DisplayName')
  if type(name)=='string'and name~=''then return name end
@@ -303,6 +372,61 @@ local function isOpen(model)
  local value=model:GetAttribute('Open')
  return value==true or type(value)=='number'and value>.5
 end
+-- Puzzle props (World/CatShelf, World/LullabyGramophone, World/SlothToyChest). Prompts only; the server decides.
+local function puzzlePrompt(model,kind)
+ if kind=='catshelf' then
+  if model:GetAttribute('Gilded') then return 'CAT SHELF','The cats are golden now' end
+  return 'CAT SHELF',('Bring the porcelain cats home \u{00B7} %d/3'):format(model:GetAttribute('CatsHome') or 0)
+ end
+ if kind=='gramophone' then
+  if workspace:GetServerTimeNow()<(model:GetAttribute('LullabyUntil') or 0) then return 'LULLABY PLAYING','Every monster is dozing' end
+  if model:GetAttribute('LullabyDone') then return 'GRAMOPHONE','The record has played' end
+  return 'GRAMOPHONE','Its lullaby record is missing'
+ end
+ if kind=='toychest' then
+  if model:GetAttribute('ChestLocked')~=true then return 'TOY CHEST','Empty' end
+  if player:GetAttribute('ChestKey')==model.Name then return 'UNLOCK CHEST','Your sloth key fits' end
+  return 'LOCKED TOY CHEST','The napping sloth has its key'
+ end
+ if kind=='sloth' then
+  if model:GetAttribute('HasKey')~=true then return 'NAPPING SLOTH','Shh...' end
+  if workspace:GetServerTimeNow()<(model:GetAttribute('SlothStirUntil') or 0) then return 'HUGGING IT TIGHT','Back off, then sneak in' end
+  if player:GetAttribute('Crouching') then return 'TAKE KEY GENTLY','Quietly...' end
+  return 'NAPPING SLOTH','Crouch and sneak up to take its key'
+ end
+ return nil
+end
+-- World features (InteractServer useWorldFeature; World_shared.md): laundry chute, crawl hatch, WorldB's wall safe.
+-- Prompts only; the server decides.
+local function carryingItem()
+ return (grabPhase=='hold' and grabTarget~=nil and grabTarget:GetAttribute('Kind')=='pickup') or (player:GetAttribute('CursedHeldCount') or 0)>0
+end
+local function featurePrompt(model,kind)
+ local now=workspace:GetServerTimeNow()
+ if kind=='chute' then
+  if model:GetAttribute('ChuteEnd')~='top' then return 'CHUTE EXIT','Things sent down land here' end
+  if now<(model:GetAttribute('ChuteReadyAt') or 0) then return 'CHUTE BUSY','Something is still falling' end
+  if carryingItem() then return 'SEND DOWN','It drops to the floor below' end
+  return 'LAUNDRY CHUTE','Carry an item here to send it down'
+ end
+ if kind=='safe' then
+  if model:GetAttribute('SafeOpen') then return 'EMPTY SAFE',nil end
+  local part=aimPart and aimPart:IsDescendantOf(model) and aimPart.Name or ''
+  local dial=tonumber(part:match('^Dial([123])$'))
+  if dial then return 'TURN DIAL','Shows '..tostring(model:GetAttribute('Dials') or '111'):sub(dial,dial) end
+  if part=='Handle' then
+   if now<(model:GetAttribute('SafeJamUntil') or 0) then return 'STUCK','Wrong code' end
+   return 'PULL HANDLE','Opens if the dials are right'
+  end
+  return 'OLD SAFE','Find the code, set the dials, pull the handle'
+ end
+ if kind=='hatch' then
+  if carryingItem() then return 'HANDS FULL','Drop your item to crawl' end
+  if now<(model:GetAttribute('HatchJamUntil') or 0) then return 'HATCH SWINGING','Wait a moment' end
+  return 'CRAWL THROUGH','Too small for the cart'
+ end
+ return nil,nil
+end
 local function targetPrompt(model)
  local kind=model:GetAttribute('Kind')
  if model:GetAttribute('FaceOwner')==player.UserId then
@@ -311,12 +435,20 @@ local function targetPrompt(model)
  if kind=='cart'then return 'GRAB CART',promptDevice()=='touch'and 'Tap to push'or 'Hold to push' end
  if kind=='sell'then
   local round=ReplicatedStorage:FindFirstChild('RecoveryRound')
-  return round and round:GetAttribute('Phase')=='Returning'and 'RETURN ITEMS'or 'SELL ITEMS','Keep cart at van (5 seconds)'
+  return round and round:GetAttribute('Phase')=='Returning'and 'RETURN ITEMS'or 'SELL ITEMS','Keep cart at van (3 seconds)'
  end
  if kind=='pickup'then
   local value=math.floor(tonumber(model:GetAttribute('Value'))or 0)
   return 'GRAB '..displayName(model),(model:GetAttribute('CargoStored')and 'From cart'or promptDevice()=='touch'and 'Tap to grab'or 'Hold to grab')..' \u{00B7} $'..value
  end
+ -- Close-up choice props (CloseUpChoiceClient): grabbing one opens its YES / NO card; the first grab claims it.
+ if kind=='choice'then
+  local by=model:GetAttribute('ClaimedBy')
+  if by and by~=player.UserId then return 'SOMEONE IS DECIDING','Wait for them'end
+  return model:GetAttribute('ChoiceVerb')or 'LOOK CLOSER',promptDevice()=='touch'and 'Tap GRAB'or 'Grab it'
+ end
+ local featureVerb,featureHint=featurePrompt(model,kind);if featureVerb then return featureVerb,featureHint end
+ local puzzleVerb,puzzleHint=puzzlePrompt(model,kind);if puzzleVerb then return puzzleVerb,puzzleHint end
  if kind=='key'then return 'PICK UP KEY' end
  if model:GetAttribute('Locked')then
   if(tonumber(player:GetAttribute('Keys'))or 0)>0 then return 'UNLOCK'end
@@ -341,14 +473,14 @@ local function actionText(model)
 end
 local function carryHint(device)
  if device=='touch'then return nil end
- if device=='pad'then return 'Release RT' end
+ if device=='pad'then return 'Release '..InputHints.Button('ButtonR2')end
  return 'Release LMB \u{00B7} Scroll to move'
 end
 local function keyText(action)
  local device=promptDevice()
- if action=='drop'then return device=='pad'and 'RT'or device=='touch'and 'DROP'or 'LMB'end
- if action~='use'and target and(target:GetAttribute('Kind')=='pickup'or target:GetAttribute('Kind')=='cart')then
-  return device=='pad'and 'RT'or device=='touch'and 'GRAB'or 'LMB'
+ if action=='drop'then return device=='pad'and InputHints.Button('ButtonR2')or device=='touch'and 'DROP'or 'LMB'end
+ if action~='use'and target and(target:GetAttribute('Kind')=='pickup'or target:GetAttribute('Kind')=='cart'or target:GetAttribute('Kind')=='choice')then
+  return device=='pad'and InputHints.Button('ButtonR2')or device=='touch'and 'GRAB'or 'LMB'
  end
  if device=='pad'then return UserInputService:GetStringForKeyCode(Enum.KeyCode.ButtonX)=='ButtonSquare'and '\u{25A1}'or 'X'end
  return 'E'
@@ -358,7 +490,7 @@ local function buttonText(text)
 end
 
 -- Gear shop items: the door key fires the held gear (throw / place / shoot) with the camera aim.
-local GEAR_VERB={Grenade='THROW',ProxMine='PLACE',HypnoGun='SHOOT',SlayerGun='SHOOT'}
+local GEAR_VERB={Grenade='THROW',ProxMine='PLACE',HypnoGun='SHOOT',SlayerGun='SHOOT',MedKit='HEAL',BigMedKit='HEAL'} -- med kits: held like gear, used with this key (2026-10-22)
 local function heldGear()return GEAR_VERB[player:GetAttribute('CursedActive')or '']end
 -- selene: allow(if_same_then_else)
 local function activate()
@@ -367,7 +499,7 @@ local function activate()
 		event:FireServer("leave")
  elseif state=='free' and heldGear() then cursed:FireServer('use',workspace.CurrentCamera.CFrame)
 	elseif state == "free" and target then
-		event:FireServer("use", target)
+		event:FireServer("use", target, aimPart and aimPart:IsDescendantOf(target) and aimPart.Name or nil)
  elseif state=='free' and (player:GetAttribute('CursedHeldCount') or 0)>0 then cursed:FireServer('use',workspace.CurrentCamera.CFrame)
 	end
 end
@@ -387,12 +519,16 @@ local function beginInteraction(screenPoint,device)
  if not interactionContext()then return end
  if lobbyMode()then target=lobbyAim(screenPoint,device)end
  if player:GetAttribute('VanShopOpen')or player:GetAttribute('MapOpen')or (player:GetAttribute('AdminPassPanelOpen')or player:GetAttribute('AppearanceOpen'))or grabPressed or UserInputService:GetFocusedTextBox() then return end
+ if state=='free' and target and target:GetAttribute('Kind')=='choice' then
+  local ev=ReplicatedStorage:FindFirstChild('CloseUpChoiceEvent');if ev then ev:FireServer('claim',target)end
+  return
+ end
  if state=='free' and not (target and (target:GetAttribute('Kind')=='pickup' or target:GetAttribute('Kind')=='cart'))then
   local own=ownStuckCurse();if own then target=own end
  end
  if state=='free' and target and (target:GetAttribute('Kind')=='pickup' or target:GetAttribute('Kind')=='cart') then
   grabAimLost=0;grabPressed=true;grabTarget=target;grabPhase=target:GetAttribute('Kind')=='cart' and 'hold' or 'reach';grabPulse=0;grabStartedAt=os.clock()
-  if touchMode() and target:GetAttribute('Kind')=='pickup' then HoldPose.BeginGrab(target,.22) end
+  if touchMode() and target:GetAttribute('Kind')=='pickup' then HoldPose.BeginGrab(target,.1) end
   grabConfirmed,grabSentAt,grabTries=false,os.clock(),1
   event:FireServer('holdBegin',target)
  end
@@ -403,23 +539,49 @@ endInteraction=function(dropRay)
   HoldPose.EndGrab();event:FireServer('holdEnd',dropRay)
  end
 end
+-- Letting go of left click / the grab trigger drops what you carry, but only once the button has stayed up for
+-- RELEASE_GRACE: a trigger easing off for a frame or a mouse switch chattering no longer throws the item away.
+local RELEASE_GRACE=.18
+local releaseToken=0
+local function grabButtonDown()
+ if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)then return true end
+ for _,pad in UserInputService:GetConnectedGamepads()do
+  if UserInputService:IsGamepadButtonDown(pad,Enum.KeyCode.ButtonR2)then return true end
+ end
+ return false
+end
+local function isGrabButton(input)return input.UserInputType==Enum.UserInputType.MouseButton1 or input.KeyCode==Enum.KeyCode.ButtonR2 end
+-- Hold to grab (owner 2026-10-25): left click / R2 held with nothing in hand stays armed, and the first item or cart the
+-- aim lands on is picked up without a re-click. Only a press that began in the world arms it (not one on a menu).
+-- Phones need a real tap on GRAB.
+local holdArmed=false
 -- selene: allow(if_same_then_else)
 UserInputService.InputBegan:Connect(function(input,processed)
+ if isGrabButton(input)and not processed and not UserInputService:GetFocusedTextBox()then holdArmed=true end
+ if isGrabButton(input)and releaseToken>0 then releaseToken=0;if grabPressed then return end end -- pressed again inside the grace: keep holding
  if processed or UserInputService:GetFocusedTextBox() then return end
  if input.UserInputType==Enum.UserInputType.MouseButton1 then
   beginInteraction(UserInputService:GetMouseLocation(),'kb')
  elseif input.UserInputType==Enum.UserInputType.Touch and lobbyMode()then
   beginInteraction(input.Position,'touch')
- elseif input.KeyCode==Enum.KeyCode.ButtonR2 and not grabPressed and ((target and (target:GetAttribute('Kind')=='pickup' or target:GetAttribute('Kind')=='cart')) or ownStuckCurse()) then
+ elseif input.KeyCode==Enum.KeyCode.ButtonR2 and not grabPressed and ((target and (target:GetAttribute('Kind')=='pickup' or target:GetAttribute('Kind')=='cart' or target:GetAttribute('Kind')=='choice')) or ownStuckCurse()) then
   beginInteraction()
  elseif KEYS[input.KeyCode] then
   activate()
  end
 end)
 UserInputService.InputEnded:Connect(function(input)
- if input.UserInputType==Enum.UserInputType.MouseButton1 or input.KeyCode==Enum.KeyCode.ButtonR2 then endInteraction() end
+ if isGrabButton(input)then holdArmed=false end
+ if not isGrabButton(input)or not grabPressed then return end
+ releaseToken+=1;local mine=releaseToken
+ task.delay(RELEASE_GRACE,function()
+  if releaseToken~=mine then return end
+  releaseToken=0
+  if not grabButtonDown()then endInteraction()end
+ end)
 end)
-UserInputService.WindowFocusReleased:Connect(endInteraction)
+-- Alt-tab, overlays and notifications keep the item in hand; back in the window, it drops only if the button is up.
+UserInputService.WindowFocused:Connect(function()if grabPressed and not touchMode()and not grabButtonDown()then endInteraction()end end)
 UserInputService.TextBoxFocused:Connect(endInteraction)
 UserInputService.GamepadDisconnected:Connect(endInteraction)
 touchButton.Activated:Connect(activate)
@@ -431,12 +593,53 @@ local function touchGrabDrop()
   if grabPressed then endInteraction(suggestion)else cursed:FireServer('drop',suggestion)end
  else beginInteraction()end
 end
-grabButton.Activated:Connect(touchGrabDrop)
+grabButton.Activated:Connect(touchGrabDrop) -- phones: a real tap on GRAB, never a held finger (owner 2026-10-25)
+RunService.Heartbeat:Connect(function()
+ if not holdArmed or grabPressed or state~='free'then return end
+ if not grabButtonDown()then holdArmed=false;return end
+ -- only items and the cart: a held button never claims a choice prop or opens a panel
+ local kind=target and target:GetAttribute('Kind')
+ if kind~='pickup'and kind~='cart'then return end
+ if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)then beginInteraction(UserInputService:GetMouseLocation(),'kb')else beginInteraction()end
+end)
 
 
 local function doorPose(model, t)
-	return model:GetAttribute("ClosedPivot") * CFrame.Angles(0, math.rad(model:GetAttribute("Swing") * t), 0)
+	return model:GetAttribute("ClosedPivot") * CFrame.Angles(0, math.rad((model:GetAttribute("Swing") or 100) * (model:GetAttribute("SwingSign") or 1) * t), 0)
 end
+
+-- Doors and drawers glide on this screen every frame: InteractServer announces each move (from, to, server
+-- start time, length) on MoverAnimEvent and still moves the real parts for collisions. Same curve as the server.
+local moverAnims = {}
+local function moverPose(model, t)
+	local closed = model:GetAttribute("ClosedPivot")
+	if typeof(closed) ~= "CFrame" then return nil end
+	if model:GetAttribute("Kind") == "drawer" then return closed * CFrame.new(0, 0, -(model:GetAttribute("Travel") or 0) * t) end
+	return closed * CFrame.Angles(0, math.rad((model:GetAttribute("Swing") or 100) * (model:GetAttribute("SwingSign") or 1) * t), 0) -- SwingSign: InteractServer may open a door the other way to miss the cart
+end
+task.spawn(function()
+	local animEvent = ReplicatedStorage:WaitForChild("MoverAnimEvent", 60)
+	if not animEvent then return end
+	animEvent.OnClientEvent:Connect(function(model, from, to, start, duration)
+		if typeof(model) == "Instance" and model:IsA("Model") and type(from) == "number" and type(to) == "number" and type(start) == "number" and type(duration) == "number" and duration > 0 then
+			moverAnims[model] = { from = from, to = to, start = start, duration = duration }
+		end
+	end)
+end)
+RunService:BindToRenderStep("MoverGlide", Enum.RenderPriority.Camera.Value - 1, function()
+	if not next(moverAnims) then return end
+	local now = workspace:GetServerTimeNow()
+	for model, a in moverAnims do
+		if not model.Parent or (hide and table.find(hide.doors, model)) then moverAnims[model] = nil; continue end
+		local t = math.clamp((now - a.start) / a.duration, 0, 1)
+		local eased
+		if a.to > a.from and model:GetAttribute("Kind") ~= "drawer" then local u = t - 1; eased = 1 + 2 * u * u * u + u * u -- opening doors settle (same curve as InteractServer)
+		else eased = game:GetService("TweenService"):GetValue(t, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut) end
+		local pose = moverPose(model, a.from + (a.to - a.from) * eased)
+		if pose then model:PivotTo(pose) end
+		if t >= 1 then moverAnims[model] = nil end
+	end
+end)
 
 local turn -- {from, to, t, duration}: swing the camera to face out of the closet
 
@@ -459,6 +662,28 @@ event.OnClientEvent:Connect(function(s, closet, duration)
   if grabPressed and grabTarget==closet then grabPhase='hold';if touchMode() then HoldPose.ConfirmGrab(closet) end; else event:FireServer('holdEnd') end
   return
  elseif s=='grabEnded' then endInteraction();return end
+ if s=='crawl' then
+  -- InteractServer useHatch slides the (anchored) root through the wall (World/CrawlHatch): the view drops to crawl
+  -- height and the screen squeezes in from both sides (a tight fit!), then both come back. Local only, about 1 s.
+  local hum=player.Character and player.Character:FindFirstChildOfClass('Humanoid')
+  local total=type(duration)=='number' and duration or 1
+  local TS=game:GetService('TweenService')
+  if hum then
+   TS:Create(hum,TweenInfo.new(total*.35,Enum.EasingStyle.Sine),{CameraOffset=Vector3.new(0,-2.3,0)}):Play()
+   task.delay(total,function() if hum.Parent and not hide then TS:Create(hum,TweenInfo.new(.3,Enum.EasingStyle.Sine),{CameraOffset=Vector3.zero}):Play() end end)
+  end
+  local pg=player:FindFirstChildOfClass('PlayerGui')
+  if pg then
+   local sq=Instance.new('ScreenGui');sq.Name='CrawlSqueeze';sq.IgnoreGuiInset=true;sq.ResetOnSpawn=false;sq.DisplayOrder=-4;sq.Parent=pg
+   for _,side in {0,1} do
+    local bar=Instance.new('Frame');bar.BorderSizePixel=0;bar.BackgroundColor3=Color3.fromRGB(24,18,12);bar.AnchorPoint=Vector2.new(side,0)
+    bar.Position=UDim2.fromScale(side,0);bar.Size=UDim2.fromScale(0,1);bar.Parent=sq
+    TS:Create(bar,TweenInfo.new(total*.45,Enum.EasingStyle.Quad,Enum.EasingDirection.Out,0,true),{Size=UDim2.fromScale(.3,1)}):Play()
+   end
+   game:GetService('Debris'):AddItem(sq,total+.3)
+  end
+  return
+ end
 	if s == "turning" then
 		local look = camera.CFrame.LookVector
 		turn = { from = Vector3.new(look.X, 0, look.Z).Unit, to = closet.CFrame.LookVector, t = 0, duration = duration }
@@ -512,8 +737,13 @@ end)
 RunService.RenderStepped:Connect(function(dt)
  camera=workspace.CurrentCamera
  if not interactionContext()then endInteraction();target=nil;highlight.Adornee=nil;prompt.Visible=false;touchButton.Visible=false;grabButton.Visible=false;return end
- -- Reading the field map (FieldMapClient) also suspends every interaction.
- if player:GetAttribute('VanShopOpen')or player:GetAttribute('MapOpen')or (player:GetAttribute('AdminPassPanelOpen')or player:GetAttribute('AppearanceOpen'))then endInteraction();target=nil;highlight.Adornee=nil;prompt.Visible=false;touchButton.Visible=false;grabButton.Visible=false;return end
+ -- Reading the field map keeps what is in hand (CursedItemsServer keeps it following the aim) but starts nothing new.
+ if player:GetAttribute('MapOpen')and not(player:GetAttribute('VanShopOpen')or player:GetAttribute('AdminPassPanelOpen')or player:GetAttribute('AppearanceOpen'))then
+  target=nil;highlight.Adornee=nil;prompt.Visible=false;touchButton.Visible=false;grabButton.Visible=false
+  if grabPressed then grabPulse+=dt;if grabPulse>=.2 then grabPulse=0;event:FireServer('holdKeep')end end
+  return
+ end
+ if player:GetAttribute('VanShopOpen')or (player:GetAttribute('AdminPassPanelOpen')or player:GetAttribute('AppearanceOpen'))then endInteraction();target=nil;highlight.Adornee=nil;prompt.Visible=false;touchButton.Visible=false;grabButton.Visible=false;return end
  if grabPressed then
   grabPulse+=dt
   if grabPulse>=.2 then grabPulse=0;event:FireServer('holdKeep') end
@@ -531,7 +761,8 @@ RunService.RenderStepped:Connect(function(dt)
  local gearVerb=state=='free'and heldGear()
  local entry=ItemNames[player:GetAttribute('CursedActive')]
  local heldName=grabTarget and(grabTarget:GetAttribute('Kind')=='cart'and 'CART'or displayName(grabTarget))or entry and entry.name or 'ITEM'
- local dropAction=carrying and state~='hidden'and not gearVerb
+ local chuteSend=carrying and target~=nil and target:GetAttribute('Kind')=='chute' and target:GetAttribute('ChuteEnd')=='top'
+ local dropAction=carrying and state~='hidden'and not gearVerb and not chuteSend
  local text,verb,hint
  if state=='hidden'then
   verb='LEAVE'
@@ -541,7 +772,9 @@ RunService.RenderStepped:Connect(function(dt)
   verb=gearVerb..' '..(entry and entry.name or '')
  elseif grabPressed and grabPhase=='reach'then
   verb='GRABBING '..(grabTarget and displayName(grabTarget)or 'item')
-  hint=math.floor(math.clamp((os.clock()-grabStartedAt)/.22,0,1)*100)..'%'
+  hint=math.floor(math.clamp((os.clock()-grabStartedAt)/.1,0,1)*100)..'%'
+ elseif chuteSend and not gearVerb then
+  verb='SEND '..heldName..' DOWN'
  elseif carrying then
   verb='DROP '..heldName
  elseif target and target~=grabTarget then
@@ -554,15 +787,15 @@ RunService.RenderStepped:Connect(function(dt)
  if grabTarget and grabTarget:GetAttribute('FaceOwner')==player.UserId then text='REMOVING '..(grabTarget:GetAttribute('ItemId')=='CoolSunglasses'and 'SUNGLASSES'or 'MOUSTACHE')..'\n'..math.floor((grabTarget:GetAttribute('MoustachePullProgress')or 0)*100)..'% - keep holding'end
  -- Context stays in the same HUD location on every platform; buttons keep their existing actions.
  prompt.Visible=text~=nil
- touchButton.Visible=touch and(gearVerb~=nil and gearVerb~=false or not(grabPressed and grabTarget and grabTarget:GetAttribute('Kind')=='cart')and(state=='hidden'or(target~=nil and target:GetAttribute('Kind')~='pickup'and target:GetAttribute('Kind')~='cart')))
+ touchButton.Visible=touch and(gearVerb~=nil and gearVerb~=false or not(grabPressed and grabTarget and grabTarget:GetAttribute('Kind')=='cart')and(state=='hidden'or(target~=nil and target:GetAttribute('Kind')~='pickup'and target:GetAttribute('Kind')~='cart'and target:GetAttribute('Kind')~='choice')))
  grabButton.Visible=touch
  grabButton.TextColor3=grabPressed and Color3.fromRGB(246,220,184)or Color3.fromRGB(231,236,221)
- local grabVerb=target and(target:GetAttribute('Kind')=='pickup'or target:GetAttribute('Kind')=='cart')and select(1,targetPrompt(target))or 'GRAB'
+ local grabVerb=target and(target:GetAttribute('Kind')=='pickup'or target:GetAttribute('Kind')=='cart'or target:GetAttribute('Kind')=='choice')and select(1,targetPrompt(target))or 'GRAB'
  grabButton.Text=carrying and 'DROP'or buttonText(grabVerb)
- grabButton.BackgroundTransparency=(grabPressed or target and(target:GetAttribute('Kind')=='pickup'or target:GetAttribute('Kind')=='cart'))and .15 or .6
+ grabButton.BackgroundTransparency=(grabPressed or target and(target:GetAttribute('Kind')=='pickup'or target:GetAttribute('Kind')=='cart'or target:GetAttribute('Kind')=='choice'))and .15 or .6
  if text then
-  label.Text=text
-  local useAction=gearVerb or state=='hidden'or target and target:GetAttribute('Kind')~='pickup'and target:GetAttribute('Kind')~='cart'
+  label.Text=heldPrompt(text,heldName,heldCount>0 and carrying)
+  local useAction=gearVerb or state=='hidden'or target and target:GetAttribute('Kind')~='pickup'and target:GetAttribute('Kind')~='cart'and target:GetAttribute('Kind')~='choice'
   keycap.Text=keyText(dropAction and 'drop'or useAction and 'use'or 'grab')
   keycap.Visible=not touch and(dropAction or useAction or not grabPressed and target~=nil)and true or false
   local touchVerb=gearVerb or(state=='hidden'and 'LEAVE')or(target and select(1,targetPrompt(target)))or verb

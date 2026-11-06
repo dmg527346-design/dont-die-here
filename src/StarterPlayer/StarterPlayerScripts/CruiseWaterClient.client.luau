@@ -1,6 +1,9 @@
 -- Cruise map sea: a custom animated wave surface (EditableMesh) that follows the camera, a far
 -- horizon plane, bioluminescent plankton sparkles, and glowing wakes behind boats.
 -- Heights come from ReplicatedStorage.CruiseWater, the same function the boat floats on.
+-- Live servers (owner 2026-10-27): Cruise is out of the map pool, so the sea stays off there (MapGen publishes the pool
+-- as the ReplicatedStorage attribute MapPool). Studio keeps it for forced-map tests; no pool after 15 s = run as before.
+do local RS_=game:GetService('ReplicatedStorage');local pool,t0=RS_:GetAttribute('MapPool'),os.clock();if not game:GetService('RunService'):IsStudio()then while pool==nil and os.clock()-t0<15 do task.wait(.5);pool=RS_:GetAttribute('MapPool')end;if pool and not table.find(string.split(pool,','),'Cruise')then return end end end
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local AssetService = game:GetService("AssetService")
@@ -12,7 +15,8 @@ local player = Players.LocalPlayer
 -- Phones and tablets get a quarter of the vertices (same 320-stud area) updated half as often: the full mesh ran
 -- out of their EditableMesh memory budget and cost a large share of the frame.
 local UIS = game:GetService("UserInputService")
-local LIGHT = UIS.TouchEnabled and not UIS.KeyboardEnabled
+local InputHints=require(game:GetService('ReplicatedStorage'):WaitForChild('InputHints'))
+local LIGHT = InputHints.IsMobile()
 local N = LIGHT and 32 or 64 -- grid cells per side
 local S = LIGHT and 10 or 5 -- studs per cell (320 x 320 studs of moving sea around the camera)
 local HALF = N * S / 2

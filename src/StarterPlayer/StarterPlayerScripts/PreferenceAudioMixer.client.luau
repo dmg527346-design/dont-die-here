@@ -2,7 +2,7 @@ local SS=game:GetService('SoundService')
 local Pref=require(game.ReplicatedStorage:WaitForChild('HorrorPreferences'))
 local p=game.Players.LocalPlayer
 local groups={}
-for _,entry in {{'GameplaySFX',2.4},{'GameplayUI',2.25},{'GameplayMusic',2.4}}do
+for _,entry in {{'GameplaySFX',2.4},{'GameplayUI',2.25},{'GameplayMusic',.6}}do
  local group=SS:FindFirstChild(entry[1]) or Instance.new('SoundGroup')
  group.Name=entry[1];group.Parent=SS;groups[group]=entry[2]
 end

@@ -106,7 +106,7 @@ local function page(name)
  local grid=Instance.new('UIGridLayout');grid.CellSize=UDim2.new(.5,-GAP,0,ROW_H);grid.CellPadding=UDim2.fromOffset(GAP,GAP);grid.SortOrder=Enum.SortOrder.LayoutOrder;grid.Parent=f
  local pad=Instance.new('UIPadding');pad.PaddingTop=UDim.new(0,GAP);pad.PaddingBottom=UDim.new(0,GAP);pad.PaddingLeft=UDim.new(0,GAP);pad.PaddingRight=UDim.new(0,GAP+6);pad.Parent=f
  pages[name]=f
- local t=button(tabBar,'Tab_'..name,name:upper(),function() currentPage=name;refreshUi() end);t:SetAttribute('OwnerOnly',false);t.Size=UDim2.new(1/7,-GAP,1,0);t.LayoutOrder=#tabBar:GetChildren();tabs[name]=t
+ local t=button(tabBar,'Tab_'..name,name:upper(),function() currentPage=name;refreshUi() end);t:SetAttribute('OwnerOnly',false);t.Size=UDim2.new(1/8,-GAP,1,0);t.LayoutOrder=#tabBar:GetChildren();tabs[name]=t
  return f
 end
 local order=0
@@ -265,17 +265,33 @@ local function layout()
 end
 local previousFocus
 function setOpen(value)
- if value and not authorized()then return end
+ if value and not owner()then return end -- owner only (2026-10-25): nobody else gets this window
  if value and not owner()then currentPage='Targets'end
- panel.Visible=value;if openButton then openButton.Visible=not value end;closeButton.Modal=value;p:SetAttribute('AdminPowersPanelOpen',value)
+ panel.Visible=value;if openButton then openButton.Visible=not value and not p:GetAttribute('InLobbyCircle')end;closeButton.Modal=value;p:SetAttribute('AdminPowersPanelOpen',value)
  if value then previousFocus=GS.SelectedObject;UIS.MouseBehavior=Enum.MouseBehavior.Default;layout();refreshState();refreshUi()
   if UIS:GetLastInputType().Name:find('Gamepad') then GS.SelectedObject=tabs[currentPage] end
  elseif GS.SelectedObject and GS.SelectedObject:IsDescendantOf(panel) then GS.SelectedObject=previousFocus and previousFocus.Parent and previousFocus or nil end
 end
-openButton=button(gui,'OpenPowers','POWERS',function() setOpen(not panel.Visible) end)
-openButton.AnchorPoint=Vector2.new(0,1);openButton.Position=UDim2.new(0,OPEN_BUTTON_X,1,-12);openButton.Size=UDim2.fromOffset(OPEN_BUTTON_W,OPEN_BUTTON_H);openButton:SetAttribute('OwnerOnly',false)
+-- One window, no on-screen button (owner 2026-10-25): P opens it on the owner's screen only. PASSES is the admin pass
+-- panel (AdminPassClient), shown in this window's place; its POWERS tab comes back here.
+local function passApi()local s=p.PlayerScripts:FindFirstChild('AdminPassClient');return s and s:FindFirstChild('PassPanelApi')end
+local passesTab=button(tabBar,'Tab_Passes','PASSES',function()
+ local api=passApi();if not api then return end
+ local at,size=panel.AbsolutePosition,panel.AbsoluteSize;setOpen(false);api:Invoke('open',at,size)
+end);passesTab:SetAttribute('OwnerOnly',true);passesTab.Size=UDim2.new(1/8,-GAP,1,0);passesTab.LayoutOrder=99
+local openPowers=Instance.new('BindableEvent');openPowers.Name='OpenPowers';openPowers.Parent=script
+openPowers.Event:Connect(function()if owner()then setOpen(true)end end)
 
-CAS:BindAction('OwnerPowersPanel',function(_,s) if not authorized()or UIS:GetFocusedTextBox()then return Enum.ContextActionResult.Pass end;if s==Enum.UserInputState.Begin then setOpen(not panel.Visible)end;return Enum.ContextActionResult.Sink end,false,Enum.KeyCode.P)
+
+CAS:BindAction('OwnerPowersPanel',function(_,s)
+ if not owner()or UIS:GetFocusedTextBox()then return Enum.ContextActionResult.Pass end
+ if s==Enum.UserInputState.Begin then
+  -- P closes whichever tab is up, or opens the window
+  local api=passApi()
+  if api and api:Invoke('isOpen')then api:Invoke('close')else setOpen(not panel.Visible)end
+ end
+ return Enum.ContextActionResult.Sink
+end,false,Enum.KeyCode.P)
 CAS:BindAction('OwnerPowersFly',function(_,s) if not owner()then return Enum.ContextActionResult.Pass end;if s==Enum.UserInputState.Begin and not UIS:GetFocusedTextBox()then state.fly=not state.fly;if state.fly then startFly() else stopFly() end;refreshUi() end;return Enum.ContextActionResult.Pass end,false,Enum.KeyCode.X)
 CAS:BindAction('OwnerPowersThrow',function(_,s) if not owner()then return Enum.ContextActionResult.Pass end;if s==Enum.UserInputState.Begin and not UIS:GetFocusedTextBox()then request('throw',state.throw) end;return Enum.ContextActionResult.Pass end,false,Enum.KeyCode.T)
 CAS:BindActionAtPriority('OwnerPowersBack',function(_,s) if not panel.Visible then return Enum.ContextActionResult.Pass end;if s==Enum.UserInputState.Begin then setOpen(false) end;return Enum.ContextActionResult.Sink end,false,5001,Enum.KeyCode.ButtonB)
@@ -283,7 +299,7 @@ if workspace.CurrentCamera then workspace.CurrentCamera:GetPropertyChangedSignal
 layout();refreshUi()
 
 local function accessChanged()
- if not authorized()then setOpen(false);local clipped=state.noclip;state.fly=false;stopFly();state.noclip=false
+ if not owner()then setOpen(false);local clipped=state.noclip;state.fly=false;stopFly();state.noclip=false
   if clipped and p.Character then for _,part in p.Character:GetChildren()do if part:IsA('BasePart')and(part.Name:find('Torso')or part.Name=='Head')then part.CanCollide=true end end end
  end
  refreshUi()
@@ -291,7 +307,7 @@ end
 p:GetAttributeChangedSignal('AdminAuthorized'):Connect(accessChanged)
 p:GetAttributeChangedSignal('AdminOwner'):Connect(accessChanged);accessChanged()
 local bridge=Instance.new('BindableEvent');bridge.Name='OpenTargets';bridge.Parent=script
-bridge.Event:Connect(function()if authorized()then currentPage='Targets';setOpen(true)end end)
+bridge.Event:Connect(function()if owner()then currentPage='Targets';setOpen(true)end end)
 Players.PlayerAdded:Connect(function()if panel.Visible then refreshState()end end)
 Players.PlayerRemoving:Connect(function()if panel.Visible then task.defer(refreshState)end end)
 

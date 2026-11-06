@@ -103,7 +103,10 @@ function M.RemoveAttached(p,m)
  if workspace:Raycast(head.Position,m.PrimaryPart.Position-head.Position,params)then return false end
  -- Revalidate after reach/visibility work: death, leave or a concurrent rescue may have changed the state.
  if attached[m]~=expected or not M.CanRemove(p,m)then return false end
- return finishRescue(m)
+ local rescued=expected and expected.owner
+ local ok=finishRescue(m)
+ if ok then local heroMoment=SS:FindFirstChild('HeroMomentEvent');if heroMoment then heroMoment:Fire(p,rescued,'coop')end end -- HeroRosette (WorldB)
+ return ok
 end
 local function attachItem(p,m,id,forcePopulation)
  local c=living(p)

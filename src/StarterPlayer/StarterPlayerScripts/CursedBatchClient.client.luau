@@ -89,7 +89,7 @@ local function follow(m,head,offset,role,now,t)
  local own=m:GetAttribute('CosmeticOwner')==localPlayer.UserId or m:GetAttribute('ItemWearOwner')==localPlayer.UserId
  local first=own and workspace.CurrentCamera and (workspace.CurrentCamera.CFrame.Position-head.Position).Magnitude<2
  for _,part in ipairs(m:GetDescendants())do if part:IsA('BasePart')then
-  part.LocalTransparencyModifier=first and(role=='Sunglasses'or role=='CoolHat'or role=='BirthdayHat')and 1 or 0
+  part.LocalTransparencyModifier=first and(role=='Sunglasses'or role=='CoolHat'or role=='BirthdayHat'or role=='Crown')and 1 or 0
  end end
 end
 local function itemModels()
@@ -185,3 +185,91 @@ Run:BindToRenderStep('CursedBatchCosmetics',Enum.RenderPriority.Camera.Value+6,f
  end
 end)
 
+
+-- Monster items (MonsterBatch, Monsters build 2026-10-27): small world tags over the items.
+--   Watch Gnome: lime STARING while it holds a Crawler frozen, grey Zz once it fell asleep.
+--   Tip Bell: "WALK, DON'T RUN" over a held bell, a gold DING! each time the server rings it.
+--   Cuckoo Clock: a countdown over the clock for its last 10 s, CUCKOO! when it calls.
+do
+ local TAGS={}
+ local STARE,SLEEP,CALM,DING=Color3.fromRGB(160,240,90),Color3.fromRGB(170,164,190),Color3.fromRGB(244,236,210),Color3.fromRGB(255,206,70)
+ local function tag(m,height,width)
+  local bb=TAGS[m];if bb then return bb end
+  if not m.PrimaryPart then return nil end
+  bb=Instance.new('BillboardGui');bb.Name='MonsterItemTag';bb.Adornee=m.PrimaryPart;bb.Size=UDim2.fromOffset(width,26)
+  bb.StudsOffsetWorldSpace=Vector3.new(0,height,0);bb.MaxDistance=60;bb.LightInfluence=0;bb.AlwaysOnTop=false
+  local t=Instance.new('TextLabel');t.Name='Label';t.Size=UDim2.fromScale(1,1);t.BackgroundTransparency=1;t.Font=Enum.Font.FredokaOne;t.TextScaled=true;t.Parent=bb
+  local st=Instance.new('UIStroke');st.Thickness=2;st.Color=Color3.fromRGB(14,12,22);st.Parent=t
+  bb.Parent=localPlayer:WaitForChild('PlayerGui');TAGS[m]=bb
+  return bb
+ end
+ task.spawn(function()
+  while true do
+   local mansion=workspace:FindFirstChild('Mansion');local f=mansion and mansion:FindFirstChild('Interactive')
+   local seen={};local now=workspace:GetServerTimeNow()
+   if f then for _,m in ipairs(f:GetChildren())do
+    local id=m:GetAttribute('ItemId');local text,color,pulse
+    if id=='WatchGnome'and not m:GetAttribute('HeldBy')then
+     if m:GetAttribute('GnomeAsleep')==true then text,color='Zz',SLEEP
+     elseif m:GetAttribute('GnomeStaring')==true then text,color,pulse='STARING',STARE,true end
+    elseif id=='TipBell'and m:GetAttribute('HeldBy')then
+     local rang=now-(m:GetAttribute('BellRangAt')or 0)<.35
+     text,color,pulse=rang and 'DING!' or "WALK, DON'T RUN",rang and DING or CALM,rang
+    elseif id=='CuckooClock'then
+     local at=m:GetAttribute('CuckooAt');local left=type(at)=='number'and at-now or 99
+     if now-(m:GetAttribute('CuckooCalledAt')or 0)<1.6 then text,color,pulse='CUCKOO!',DING,true
+     elseif left<=10 then text,color,pulse=('CUCKOO IN %d'):format(math.max(0,math.ceil(left))),left<=5 and DING or CALM,left<=5 end
+    end
+    if text then
+     local bb=tag(m,id=='WatchGnome'and 1.6 or 1.4,id=='CuckooClock'and 150 or id=='TipBell'and 150 or 100);local t=bb and bb:FindFirstChild('Label')
+     if t then seen[m]=true;t.Text=text;t.TextColor3=color;t.Rotation=pulse and math.sin(os.clock()*8)*5 or 0 end
+    end
+   end end
+   for m,bb in pairs(TAGS)do if not seen[m]then bb:Destroy();TAGS[m]=nil end end
+   task.wait(.1)
+  end
+ end)
+end
+
+
+-- BrewCauldron (CursedBatchEffects.HalloweenBatch + CursedItemsServer.placeHalloweenCauldron): rising bubbles,
+-- a BREWING countdown visible through walls, and an idle "drop an item in" hint up close. Local only.
+local bubbles={};local bubbleAt=0;local brewGui
+local function cauldronLabel(liquid,onTop)
+ if not brewGui or brewGui.Adornee~=liquid then
+  if brewGui then brewGui:Destroy() end
+  brewGui=Instance.new('BillboardGui');brewGui.Name='CauldronLabel';brewGui.Size=UDim2.fromOffset(240,40);brewGui.StudsOffsetWorldSpace=Vector3.new(0,3,0)
+  brewGui.MaxDistance=40;brewGui.Adornee=liquid;brewGui.Parent=folder
+  local l=Instance.new('TextLabel');l.Name='Label';l.BackgroundTransparency=1;l.Size=UDim2.fromScale(1,1);l.Font=Enum.Font.FredokaOne;l.TextSize=26
+  l.TextColor3=Color3.fromRGB(255,154,46);l.TextStrokeTransparency=.35;l.Parent=brewGui
+ end
+ brewGui.AlwaysOnTop=false -- no through-wall markers (lead 2026-10-27); the bubbling noise is the team signal
+ return brewGui.Label
+end
+Run.RenderStepped:Connect(function()
+ local now=workspace:GetServerTimeNow()
+ local map=workspace:FindFirstChild('Mansion');local holder=map and map:FindFirstChild('HalloweenCauldron')
+ local c=holder and holder:FindFirstChild('BrewCauldron');local liquid=c and c:FindFirstChild('Brew',true)
+ if liquid and liquid:IsA('BasePart') then
+  local brewing=c:GetAttribute('Brewing')==true;local left=c:GetAttribute('BrewsLeft')or 0
+  if (brewing or left>0) and now>=bubbleAt then
+   bubbleAt=now+(brewing and .07 or .3)
+   local r=liquid.Size.X*.4*math.sqrt(random:NextNumber());local a=random:NextNumber(0,math.pi*2)
+   local b=Instance.new('Part');b.Name='CauldronBubble';b.Shape=Enum.PartType.Ball;b.Material=Enum.Material.Neon;b.Color=liquid.Color
+   b.Size=Vector3.one*random:NextNumber(.15,.35);b.Anchored=true;b.CanCollide=false;b.CanQuery=false;b.CanTouch=false;b.CastShadow=false
+   local origin=liquid.Position+Vector3.new(math.cos(a)*r,.1,math.sin(a)*r);b.Position=origin;b.Parent=folder
+   table.insert(bubbles,{part=b,origin=origin,born=now,rise=random:NextNumber(1.2,2.6),life=brewing and .9 or .7})
+  end
+  local me=localPlayer.Character and localPlayer.Character:FindFirstChild('HumanoidRootPart')
+  if brewing then
+   cauldronLabel(liquid,true).Text='BREWING '..math.max(0,math.ceil((c:GetAttribute('BrewEndsAt')or now)-now))
+  elseif left>0 and me and (me.Position-liquid.Position).Magnitude<14 then
+   cauldronLabel(liquid,false).Text='DROP AN ITEM IN: +50%'
+  elseif brewGui then brewGui:Destroy();brewGui=nil end
+ elseif brewGui then brewGui:Destroy();brewGui=nil end
+ for i=#bubbles,1,-1 do
+  local s=bubbles[i];local age=now-s.born
+  if age>=s.life or not s.part.Parent then s.part:Destroy();table.remove(bubbles,i)
+  else s.part.Position=s.origin+Vector3.new(math.sin(age*9)*.08,age*s.rise,0);s.part.Transparency=(age/s.life)^2 end
+ end
+end)

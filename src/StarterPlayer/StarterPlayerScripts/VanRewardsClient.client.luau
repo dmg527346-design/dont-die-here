@@ -125,7 +125,10 @@ if Run:IsStudio()then
  local function r(t,v,i,rar)return{tokens=t,revives=v,instantWin=i,rarity=rar}end
  local claimedSlots,streak,canClaim={},4,true -- streak = today's day (server semantics)
  local start=os.clock()-25*60
- local slots={{'5m',300,r(25,0,0,'common')},{'15m',900,r(35,0,0,'common')},{'30m',1800,r(45,0,0,'common')},{'1h',3600,r(60,1,0,'rare')},{'2h',7200,r(80,0,0,'common')},{'3h',10800,r(100,1,0,'rare')},{'4h',14400,r(120,0,0,'rare')},{'5h',18000,r(140,1,0,'rare')},{'6h',21600,r(200,2,1,'legendary')}}
+ local slots={}
+ for _,slot in require(RS.RewardsConfig).TimedSlots do
+  table.insert(slots,{slot.id,slot.at,require(RS.RewardsConfig).Timed(slot.id)})
+ end
  local function dayReward(d)local c=(d-1)%7+1;local cyc=(d-1)//7;return r(({30,40,50,65,80,100,130})[c]+math.min(cyc,14)*5,(c==4 or c==7)and 1 or 0,0,c==7 and 'epic'or c>=5 and 'rare'or 'common')end
  local function build()
   local track={};local first=(streak-1)//7*7+1
@@ -291,9 +294,16 @@ local function rewardLine(reward)
  local parts={};for _,it in items(reward)do table.insert(parts,(it.key=='tokens'and('+'..it.amount)or('+'..it.amount..' '..(it.key=='revives'and 'REVIVE'or 'WIN'))))end
  return table.concat(parts,'  ')
 end
+local phone=false -- set by layout(): touch screens get small wrapping cards
 local function layout()
  local v=gui.AbsoluteSize;local w=math.min(MAX_W,v.X-MARGIN*2);local h=math.min(MAX_H,v.Y-MARGIN*2)
+ phone=platform()=='touch'
+ if phone then w=math.min(w,math.floor(v.X*.84))end
  panel.Size=UDim2.fromOffset(w,h)
+ list.ScrollingDirection=phone and Enum.ScrollingDirection.Y or Enum.ScrollingDirection.X
+ list.AutomaticCanvasSize=phone and Enum.AutomaticSize.Y or Enum.AutomaticSize.X
+ row.Wraps=phone;row.HorizontalAlignment=phone and Enum.HorizontalAlignment.Center or Enum.HorizontalAlignment.Left
+ row.VerticalAlignment=phone and Enum.VerticalAlignment.Top or Enum.VerticalAlignment.Center
  local compact=h<430 or w<560
  local header=compact and 64 or HEADER_H
  headerIcon.Size=UDim2.fromOffset(compact and 38 or 50,compact and 38 or 50);headerIcon.Position=UDim2.fromOffset(SIDE,compact and 13 or 18)
@@ -323,7 +333,7 @@ local function cardFrame(cell,accent,claimable)
  return card,rim
 end
 local function statusTag(card,text,color,textColor)
- local t=UI.text(card,'Tag',text,UI.Font.Title,12,textColor or colors.ink);t.AnchorPoint=Vector2.new(.5,1);t.Position=UDim2.new(.5,0,1,-8);t.Size=UDim2.new(1,-16,0,24)
+ local t=UI.text(card,'Tag',text,UI.Font.Title,12,textColor or colors.ink);t.AnchorPoint=Vector2.new(.5,1);t.Position=UDim2.new(.5,0,1,phone and -4 or -8);t.Size=UDim2.new(1,phone and -8 or -16,0,phone and 20 or 24)
  t.TextXAlignment=Enum.TextXAlignment.Center;t.BackgroundTransparency=0;t.BackgroundColor3=color;UI.corner(t,UDim.new(1,0));UI.fit(t,9,13);return t
 end
 -- Locked cards stay readable (that's the tease); claimed ones dim further.
@@ -335,12 +345,25 @@ end
 -- Card sizing: fill the row when it fits (7 days / 9 slots), otherwise scroll at the minimum width.
 local CARD_MIN_W,CARD_MAX_W,CARD_MIN_H,CARD_MAX_H=112,176,168,230
 local function cardSize(count,gap)
+ if phone then
+  -- Phone: five small cards per row, two rows in view, scrolling down.
+  local per=math.max(3,math.min(5,count));local cw=math.floor((list.AbsoluteSize.X-12-(per-1)*gap)/per)
+  return math.min(cw,120),math.max(84,math.floor((list.AbsoluteSize.Y-gap-6)/2))
+ end
  local w=math.floor((list.AbsoluteSize.X-16-(count-1)*gap)/math.max(1,count))
  return math.clamp(w,CARD_MIN_W,CARD_MAX_W),math.clamp(list.AbsoluteSize.Y-24,CARD_MIN_H,CARD_MAX_H)
 end
 -- Heading, reward art, amount and rarity, centred in the space above the bottom tag/button.
 local function cardContent(card,headText,headColor,reward,w,h)
  local r=rarityOf(reward)
+ if phone then
+  -- Small phone card: heading, art, amount; the rarity line is dropped.
+  local head=UI.text(card,'Head',headText,UI.Font.Display,13,headColor);head.Position=UDim2.fromOffset(4,4);head.Size=UDim2.new(1,-8,0,15);head.TextXAlignment=Enum.TextXAlignment.Center;UI.fit(head,8,13);UI.outline(head,1)
+  local icon=math.clamp(h-4-15-2-14-2-28,20,40)
+  local chips=rewardChips(card,reward,icon,3);chips.Position=UDim2.fromOffset(0,21)
+  local amt=UI.text(card,'Amount',rewardLine(reward),UI.Font.Display,12,colors.gold);amt.Position=UDim2.fromOffset(4,21+icon+1);amt.Size=UDim2.new(1,-8,0,14);amt.TextXAlignment=Enum.TextXAlignment.Center;UI.fit(amt,7,12);UI.outline(amt,1)
+  return
+ end
  local icon=math.clamp(math.floor(w*.56),46,92)
  local block=26+icon+8+30+16
  local top=math.max(8,math.floor((h-44-block)/2))
@@ -363,7 +386,7 @@ local function onCardActivated(id)
  end
 end
 local function makeClickable(card,id,label)
- local b=UI.button(card,'Claim_'..tostring(id),label,'use');b.AnchorPoint=Vector2.new(.5,1);b.Position=UDim2.new(.5,0,1,-8);b.Size=UDim2.new(1,-16,0,32);b.ZIndex=6
+ local b=UI.button(card,'Claim_'..tostring(id),label,'use');b.AnchorPoint=Vector2.new(.5,1);b.Position=UDim2.new(.5,0,1,phone and -4 or -8);b.Size=UDim2.new(1,phone and -8 or -16,0,phone and 22 or 32);b.ZIndex=6
  b.Activated:Connect(function()Audio.Play('UiClick');onCardActivated(id)end)
  -- Ready cards bob and glow so the eye finds them first.
  local rim=card:FindFirstChild('Rim')
@@ -425,7 +448,7 @@ render=function()
    else
     lockShade(card)
     -- Progress strip + live countdown on locked slots.
-    local track=Instance.new('Frame');track.Name='Progress';track.AnchorPoint=Vector2.new(.5,1);track.Position=UDim2.new(.5,0,1,-38);track.Size=UDim2.new(1,-20,0,8);track.BackgroundColor3=colors.cardLow;track.ZIndex=5;track.Parent=card;UI.corner(track,UDim.new(1,0))
+    local track=Instance.new('Frame');track.Name='Progress';track.AnchorPoint=Vector2.new(.5,1);track.Position=UDim2.new(.5,0,1,phone and -27 or -38);track.Size=UDim2.new(1,phone and -12 or -20,0,phone and 4 or 8);track.BackgroundColor3=colors.cardLow;track.ZIndex=5;track.Parent=card;UI.corner(track,UDim.new(1,0))
     local fill=Instance.new('Frame');fill.Name='Fill';fill.BackgroundColor3=k.a;fill.Size=UDim2.fromScale(0,1);fill.ZIndex=6;fill.Parent=track;UI.corner(fill,UDim.new(1,0))
     ref.fill=fill;ref.status=statusTag(card,'',colors.grey,colors.text);ref.status.ZIndex=5
    end
@@ -627,7 +650,7 @@ startOpening=function(claimKind,slotId)
  -- Only day 7 has a random extra (the Instant Win roll); every other gift is exactly what the card showed.
  -- Previews are exact (the server rolls deterministically), so the tease names the real contents.
  local jackpot=claimKind=='daily'and dayNumber%7==0
- tease.Text=jackpot and 'JACKPOT DAY!  What could be inside?'or 'What could be inside?'
+ tease.Text=jackpot and 'BIG BOX DAY!  What could be inside?'or 'What could be inside?'
  -- 3) Box drops in and squashes on landing.
  play(box,TweenInfo.new(BOX_DROP,Enum.EasingStyle.Bounce,Enum.EasingDirection.Out),{Position=UDim2.fromScale(.5,.56)})
  sfx('giftWhoosh',.9)
@@ -935,7 +958,7 @@ mainButton.Activated:Connect(function()
 end)
 closeButton.Activated:Connect(function()if busy then return end;Audio.Play('UiClick');close()end)
 PPS.PromptTriggered:Connect(function(prompt,who)
- if(prompt.Name=='DailyRewardsPrompt'or prompt.Name=='TimedRewardsPrompt')and(not who or who==p)then show(prompt.Parent)end
+ if(prompt.Name=='DailyRewardsPrompt'or prompt.Name=='TimedRewardsPrompt')and(not who or who==p)and InputHints.ConfirmTap()then show(prompt.Parent)end -- phones: a real tap, not a camera swipe
 end)
 CAS:BindActionAtPriority('VanRewardsClose',function(_,inputState)
  if not open and not busy then return Enum.ContextActionResult.Pass end

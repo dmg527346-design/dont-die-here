@@ -114,6 +114,12 @@ function Module.new(Catalog)
   assert(identifier(def.id) and #def.targets==5 and #def.rewards==5,'Achievements require five tiers.')
   achById[def.id]=def
  end
+ local masteryDefs={}
+ for _,def in Catalog.Masteries or {} do
+  assert(identifier(def.id) and type(def.targets)=='table' and #def.targets>=1 and #def.targets<=20 and identifier(def.event,60),'Invalid mastery.')
+  table.insert(masteryDefs,def)
+ end
+ local BOOST=math.clamp(Catalog.MasteryDailyBoost or 0,0,100)
  local function periods(now)
   return math.floor(now/DAY),math.floor((now+OFFSET)/WEEK)
  end
@@ -281,6 +287,34 @@ function Module.new(Catalog)
   local day,week=periods(now);q.daily=makePeriod('daily',day,q);q.weekly=makePeriod('weekly',week,q)
   return q
  end
+ -- Collection membership is additive; saved progress, targets, rewards and claims remain owned by the frozen definition.
+ local function migrateScholar(q)
+  local scholar=q.achievements and q.achievements.curse_scholar
+  local def=scholar and scholar.definition
+  if type(def)~='table' then return end
+  -- Preserve the existing retired-Balloon migration without discarding historical picks.
+  if type(def.targets)=='table' and def.targets[5]==77 then
+   def.targets[5]=76
+   local at=type(def.eligibleIds)=='table' and table.find(def.eligibleIds,'Balloon');if at then table.remove(def.eligibleIds,at)end
+  end
+  local collectionVersion=Catalog.ScholarCollectionVersion or 1
+  if type(def.eligibleIds)~='table' or (def.collectionVersion or 1)>=collectionVersion then return end
+  local present={};for _,id in def.eligibleIds do present[id]=true end
+  for _,id in Catalog.ScholarEligibleIds or {} do
+   if not present[id] then table.insert(def.eligibleIds,id);present[id]=true end
+  end
+  def.maxDistinct=math.max(def.maxDistinct or MAX_DISTINCT,math.min(#def.eligibleIds,MAX_DISTINCT))
+  def.collectionVersion=collectionVersion
+ end
+ -- The map pool shrank to five types (owner 2026-10-27): a saved Explore Different Maps ladder keeps its progress and
+ -- claims; any tier target above the catalog's is lowered to it so every tier stays reachable.
+ local function migrateTraveler(q)
+  local traveler=q.achievements and q.achievements.world_traveler
+  local def=traveler and traveler.definition
+  local current=achById.world_traveler
+  if type(def)~='table' or type(def.targets)~='table' or not current then return end
+  for i,target in current.targets do if type(def.targets[i])=='number' and def.targets[i]>target then def.targets[i]=target end end
+ end
  local function setup(profile,userId,now,selection,op,total)
   assert(validUser(userId) and validateTime(now),'Invalid server user/time.')
   assert(integer(profile.Tokens or 0,0,9007199254740991) and integer(profile.ReviveTokens or 0,0,9007199254740991),'Invalid profile balances.')
@@ -294,6 +328,9 @@ function Module.new(Catalog)
   q.requests=q.requests or {};q.requestOrder=q.requestOrder or {};q.batches=q.batches or {};q.batchOrder=q.batchOrder or {};q.producers=q.producers or {}
   q.eventReceipts=q.eventReceipts or {};q.eventFloor=q.eventFloor or -1
   q.seen=q.seen or {items={},maps={}};q.achievements=q.achievements or {};q.selection=q.selection or {partySize=1,mapKinds={},capabilities={}}
+  migrateScholar(q);migrateTraveler(q)
+  q.masteries=q.masteries or {};q.masteryBoost=q.masteryBoost or {day=-1,used=0}
+  for _,def in masteryDefs do if type(q.masteries[def.id])~='table' then q.masteries[def.id]={count=0,level=0} end end
   local day,week=periods(now)
   if selection and (q.daily.period~=day or q.weekly.period~=week) then
    q.selection={partySize=selection.partySize or 1,mapKinds=copy(selection.mapKinds or {}),capabilities=copy(selection.capabilities or {})}
@@ -397,6 +434,30 @@ function Module.new(Catalog)
   assert(length(q.archives[tab])<=MAX_ARCHIVE,'Archived period budget exceeded.')
   return archived
  end
+ -- Masteries: points from qualifying events (doubled while today's boost lasts); every level reached grants on the spot.
+ local function advanceMasteries(profile,q,event,total)
+  if not q.masteries or event.amount<=0 then return end
+  for _,def in masteryDefs do
+   local rec=q.masteries[def.id];local max=#def.targets
+   if rec and def.event==event.hook and rec.level<max and (def.creatureKind==nil or event.ctx.creatureKind==def.creatureKind)
+    and (def.kind~='collection' or eligibleItems[event.ctx.itemId or '']) then
+    local points=event.amount;local day=math.floor(event.at/DAY);local boost=q.masteryBoost
+    if day>boost.day then boost.day=day;boost.used=0 end
+    if day==boost.day and boost.used<BOOST then local extra=math.min(points,BOOST-boost.used);boost.used+=extra;points+=extra end
+    rec.count=math.min(def.targets[max],rec.count+points)
+    while rec.level<max and rec.count>=def.targets[rec.level+1] do
+     rec.level+=1
+     local r=reward(Catalog.MasteryLevelReward);if rec.level==max then sumReward(r,reward(Catalog.MasteryCompleteReward)) end
+     grant(profile,r);sumReward(total,r);q.masteryLast={id=def.id,level=rec.level,at=event.at}
+    end
+   end
+  end
+  local grand=Catalog.GrandMastery
+  if grand and #masteryDefs>0 and not q.grandMastery then
+   for _,def in masteryDefs do local rec=q.masteries[def.id];if not rec or rec.level<#def.targets then return end end
+   local r=reward(grand.reward);grant(profile,r);sumReward(total,r);q.grandMastery=true
+  end
+ end
  local function applyBatch(profile,q,batch,op,total)
   if batch==nil then return end
   assert(type(batch)=='table' and identifier(batch.id,120) and identifier(batch.producerId,100),'Invalid progress batch identity.')
@@ -442,6 +503,7 @@ function Module.new(Catalog)
      local def=item.definition
      item.progress=item.count;advance(item,def,event);item.count=item.progress;item.progress=nil
     end
+    advanceMasteries(profile,q,event,total)
     if eventEnabled(op.eventConfig,event.at) and eventEnabled(op.eventConfig,op.now) then
      local ev=q.events and q.events[q.activeEvent]
      if ev then
@@ -662,6 +724,19 @@ function Module.new(Catalog)
   out.mastery={id=q.masteryDefinition.id,claimKey=masteryKey(q),progress=mastered,target=10,claimed=q.masteryClaimed==true,
    ready=not q.masteryClaimed and mastered>=10,done=mastered,hint=Catalog.Mastery.hint,tag='[Haunted]',reward={tokens=0,revives=0,cosmeticIds={},tagIds={'Tag_Haunted'},tag='[Haunted]'}}
   if out.mastery.ready then out.readyCount+=1 end
+  out.masteries={}
+  local today=math.floor(now/DAY);local boost=q.masteryBoost or {day=-1,used=0};local mastered=0
+  out.masteryBoost={limit=BOOST,left=boost.day==today and math.max(0,BOOST-boost.used) or BOOST,resetAt=(today+1)*DAY}
+  for _,def in masteryDefs do
+   local rec=(q.masteries or {})[def.id] or {count=0,level=0};local max=#def.targets
+   if rec.level>=max then mastered+=1 end
+   table.insert(out.masteries,{id=def.id,name=def.name,kind=def.kind,creatureKind=def.creatureKind,unit=def.unit,hint=def.hint,color=copy(def.color),
+    count=rec.count,level=rec.level,maxLevel=max,floor=rec.level>0 and def.targets[rec.level] or 0,nextTarget=def.targets[math.min(max,rec.level+1)],
+    targets=copy(def.targets),complete=rec.level>=max,levelReward=reward(Catalog.MasteryLevelReward),completeReward=reward(Catalog.MasteryCompleteReward)})
+  end
+  out.masteryLast=q.masteryLast and copy(q.masteryLast) or nil
+  local grand=Catalog.GrandMastery
+  out.grandMastery=grand and {name=grand.name,hint=grand.hint,done=mastered,target=#masteryDefs,claimed=q.grandMastery==true,reward=reward(grand.reward)} or nil
   out.event={enabled=false}
   if eventEnabled(eventConfig,now) then
    local ev=q.events and q.events[q.activeEvent]
@@ -812,8 +887,10 @@ function Module.new(Catalog)
    end
    assert(length(q.adminQuestEntries or {})<=64,'Admin quest receipt budget exceeded.')
    assert(length(q.adminMapEntries or {})<=8,'Admin map receipt budget exceeded.')
+   assert(length(q.masteries or {})<=32,'Mastery budget exceeded.')
    assert(length(q.events or {})<=8 and length(q.firstClaims or {})<=64,'Quest event/first receipt budget exceeded.')
    for _,ev in q.events or {} do assert(type(ev.entries)=='table' and #ev.entries<=6 and integer(ev.candyCorn,0,1000000000),'Invalid event state.') end
+   migrateScholar(q);migrateTraveler(q)
   end)
   if not ok then return nil,tostring(reason) end
   return q

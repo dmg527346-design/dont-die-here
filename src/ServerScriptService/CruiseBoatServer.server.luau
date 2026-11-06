@@ -13,6 +13,9 @@ local Run=game:GetService('RunService')
 local Collection=game:GetService('CollectionService')
 local Core=require(RS:WaitForChild('CruiseBoatCore'))
 local Audio=require(game:GetService('ServerScriptService'):WaitForChild('GameplayAudioServer'))
+-- Live servers (owner 2026-10-27): Cruise is out of the map pool (MapGen.Profiles.Kinds), so the boat system stays off
+-- (no remote, no Heartbeat); RecoveryRoundServer already treats a missing CruiseBoatApi as no boat. Studio keeps it.
+if not game:GetService('RunService'):IsStudio()and not table.find(require(game:GetService('ServerScriptService'):WaitForChild('MapGen'):WaitForChild('Profiles')).Kinds,'Cruise')then return end
 local remote=Instance.new('RemoteEvent');remote.Name='CruiseBoatEvent';remote.Parent=RS
 local api=Instance.new('BindableFunction');api.Name='CruiseBoatApi';api.Parent=SS
 local current;local serial=0;local buckets={};local missingKit=false;local initializing=false;local constructing

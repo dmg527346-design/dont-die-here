@@ -3,12 +3,12 @@ local Players=game:GetService('Players')
 local RS=game:GetService('ReplicatedStorage')
 local DSS=game:GetService('DataStoreService')
 local RunService=game:GetService('RunService')
-local HttpService=game:GetService('HttpService')
 local schemes=require(RS:WaitForChild('CharacterSchemes'))
 local event=RS:WaitForChild('CharacterCustomColour')
-local store=DSS:GetDataStore(RunService:IsStudio() and 'HorrorCharacterScheme_v1_Studio' or 'HorrorCharacterScheme_v1')
-local SESSION=game.JobId..':'..HttpService:GenerateGUID(false)
-local LEASE_SECONDS=150
+local LOCAL_REVIEW=RunService:IsStudio()and game.PlaceId==0 and game.GameId==0
+local STUDIO_MEMORY=LOCAL_REVIEW or game:GetService('RunService'):IsStudio()and workspace:GetAttribute('StudioDataStores')~=true -- Studio playtests keep saves in memory: stopping during a DataStore call hangs Studio. Workspace StudioDataStores=true tests real saves
+local store
+if not STUDIO_MEMORY then store=DSS:GetDataStore(RunService:IsStudio() and 'HorrorCharacterScheme_v1_Studio' or 'HorrorCharacterScheme_v1')end
 local SAVE_INTERVAL=45
 local RATE_LIMIT=.08
 local states={}
@@ -117,37 +117,46 @@ transfer.OnInvoke=function(player,bodyHex,eyeHex)
   return {tonumber(value:sub(2,3),16),tonumber(value:sub(4,5),16),tonumber(value:sub(6,7),16)}
  end
  local body,eyes=parse(bodyHex),parse(eyeHex);if not body or not eyes then return false end
- state.body=body;state.eyes=eyes;state.revision+=1;apply(player,player.Character);return true
+ state.body=body;state.eyes=eyes;state.revision+=1;state.changedAt=math.max(DateTime.now().UnixTimestampMillis,state.changedAt+1);apply(player,player.Character);return true
 end
-local function save(player,state,release)
-
+-- Lock-free saves: a write happens only when a colour changed, and every write carries the time of that change, so
+-- an older write (another server, a retry) can never overwrite a newer choice. Loading is a plain read and never waits.
+-- session/lease stay '' and 0 so servers still on the previous lease-based code keep loading these records.
+local function save(player,state)
+    if STUDIO_MEMORY then
+        state.savedRevision=state.revision
+        if player.Parent then player:SetAttribute('ColourSaveStatus','Studio session only')end
+        return
+    end
     if not state.loaded then return end
     while state.saving do task.wait(.1) end
-    if state.released then return end
-    state.saving=true
-    local body,eyes=copy(state.body),copy(state.eyes)
     local revision=state.revision
+    if revision==state.savedRevision then return end
+    state.saving=true
+    local body,eyes,stamp=copy(state.body),copy(state.eyes),state.changedAt
     local saved=false
     for attempt=1,3 do
-        local ok,result=pcall(function()
-            return store:UpdateAsync('player_'..player.UserId,function(old)
-                if type(old)~='table' or old.session~=SESSION then return nil end
-                return {version=2,body=body,eyes=eyes,session=release and '' or SESSION,lease=release and 0 or os.time()+LEASE_SECONDS}
+        local superseded=false
+        local ok=pcall(function()
+            assert(store,'Persistence store is not available');return store:UpdateAsync('player_'..player.UserId,function(old)
+                superseded=false
+                if type(old)=='table' and type(old.version)=='number' and old.version>2 then superseded=true;return nil end
+                if type(old)=='table' and type(old.updated)=='number' and old.updated>stamp then superseded=true;return nil end
+                return {version=2,body=body,eyes=eyes,session='',lease=0,updated=stamp}
             end)
         end)
-        if ok and type(result)=='table' and validRGB(result.body) and validRGB(result.eyes)
-            and hex(result.body)==hex(body) and hex(result.eyes)==hex(eyes)
-            and (result.session==SESSION or release and result.session=='') then saved=true;break end
+        if ok then saved=true;break end
+        if superseded then saved=true;break end
         if attempt<3 then task.wait(attempt) end
     end
-    if saved then state.savedRevision=revision;state.released=release or false end
+    if saved and state.savedRevision<revision then state.savedRevision=revision end
     state.saving=false
-    if player.Parent then player:SetAttribute('ColourSaveStatus',saved and 'Saved' or 'Save unavailable') end
+    if player.Parent then player:SetAttribute('ColourSaveStatus',saved and (state.revision==state.savedRevision and 'Saved' or 'Saving…') or 'Save unavailable') end
 end
 local function join(player)
     if states[player] then return end
-    local state={body=fromColor(fixed.body),eyes=fromColor(EYE_DEFAULT),revision=0,savedRevision=0,
-        lastRequest=-math.huge,loaded=false,saving=false,released=false}
+    local state={body=fromColor(fixed.body),eyes=fromColor(EYE_DEFAULT),revision=0,savedRevision=0,changedAt=0,
+        lastRequest=-math.huge,loaded=false,saving=false}
     states[player]=state
     player:SetAttribute('ColourSaveStatus','Loading')
     state.connection=player.CharacterAdded:Connect(function(character) watchCharacter(player,character) end)
@@ -155,28 +164,34 @@ local function join(player)
         if player.Character==character then apply(player,character) end
     end)
     if player.Character then watchCharacter(player,player.Character) end
+    if STUDIO_MEMORY then state.loaded=true;player:SetAttribute('ColourSaveStatus','Studio session only');apply(player,player.Character);return end
     task.spawn(function()
-        local loaded
-        for attempt=1,3 do
-            local ok,data=pcall(function()
-                return store:UpdateAsync('player_'..player.UserId,function(old)
-                    if type(old)=='table' and old.session and old.session~='' and old.session~=SESSION and (old.lease or 0)>os.time() then return nil end
-                    if type(old)=='table' and old.version and old.version>2 then return nil end
+        local attempt,heldSince=0,nil
+        while states[player]==state and not closing do
+            attempt+=1
+            local ok,old=pcall(function() assert(store,'Persistence store is not available');return store:GetAsync('player_'..player.UserId) end)
+            if ok then
+                -- A server on the previous code may still be flushing this player's last change on teleport; give it a moment.
+                local held=type(old)=='table' and type(old.session)=='string' and old.session~='' and (tonumber(old.lease) or 0)>os.time()
+                heldSince=heldSince or (held and os.clock()) or nil
+                if not held or os.clock()-heldSince>=8 then
+                    if type(old)=='table' and type(old.version)=='number' and old.version>2 then
+                        player:SetAttribute('ColourSaveStatus','Session only — saving unavailable');return
+                    end
                     local body,eyes=clean(old)
-                    return {version=2,body=body,eyes=eyes,session=SESSION,lease=os.time()+LEASE_SECONDS}
-                end)
-            end)
-            if ok and type(data)=='table' and data.session==SESSION and validRGB(data.body) and validRGB(data.eyes) then loaded=data;break end
-            if attempt<3 then task.wait(attempt) end
-        end
-        if loaded then
-            state.loaded=true
-            if state.revision==0 then state.body=copy(loaded.body);state.eyes=copy(loaded.eyes) end
-            if not player.Parent or closing then save(player,state,true);return end
-            player:SetAttribute('ColourSaveStatus','Saved')
-            apply(player,player.Character)
-        elseif player.Parent then
-            player:SetAttribute('ColourSaveStatus','Session only — saving unavailable')
+                    state.loaded=true
+                    if state.revision==0 then state.body=body;state.eyes=eyes
+                    else state.changedAt=math.max(state.changedAt,(type(old)=='table' and tonumber(old.updated) or 0)+1) end
+                    player:SetAttribute('ColourSaveStatus',state.revision==state.savedRevision and 'Saved' or 'Saving…')
+                    apply(player,player.Character)
+                    if state.revision~=state.savedRevision then task.spawn(save,player,state) end
+                    return
+                end
+                task.wait(1)
+            else
+                if attempt==3 and player.Parent then player:SetAttribute('ColourSaveStatus','Session only — saving unavailable') end
+                task.wait(math.min(2^attempt,30))
+            end
         end
     end)
 end
@@ -188,12 +203,12 @@ event.OnServerEvent:Connect(function(player,region,r,g,b)
     state.lastRequest=now
     local nextColor={r,g,b}
     if hex(state[region])==hex(nextColor) then return end
-    state[region]=nextColor;state.revision+=1
+    state[region]=nextColor;state.revision+=1;state.changedAt=math.max(DateTime.now().UnixTimestampMillis,state.changedAt+1)
     apply(player,player.Character)
     player:SetAttribute('ColourSaveStatus',state.loaded and 'Saving…' or 'Session only — saving unavailable')
     local revision=state.revision
     task.delay(3,function()
-        if states[player]==state and state.loaded and state.revision==revision and not closing then save(player,state,false) end
+        if states[player]==state and state.loaded and state.revision==revision and not closing then save(player,state) end
     end)
 end)
 Players.PlayerAdded:Connect(join)
@@ -203,23 +218,27 @@ Players.PlayerRemoving:Connect(function(player)
     state.connection:Disconnect()
     state.appearanceConnection:Disconnect()
     for _,connection in ipairs(state.characterConnections or {}) do connection:Disconnect() end
-    save(player,state,true)
     states[player]=nil
+    save(player,state)
 end)
 for _,player in Players:GetPlayers() do join(player) end
 task.spawn(function()
     while not closing do
         task.wait(SAVE_INTERVAL)
         if closing then break end
-        for player,state in states do if state.loaded then task.spawn(save,player,state,false) end end
+        -- Retries only: a change whose save failed. Nothing is written for players whose colours are already saved.
+        for player,state in states do
+            if state.loaded and not state.saving and state.revision~=state.savedRevision then task.spawn(save,player,state) end
+        end
     end
 end)
 game:BindToClose(function()
+ if game:GetService('RunService'):IsStudio() then return end -- Studio stop: close-time saves can hang the server shutdown
     closing=true
     local pending=0
     for player,state in states do
         pending+=1
-        task.spawn(function() save(player,state,true);pending-=1 end)
+        task.spawn(function() save(player,state);pending-=1 end)
     end
     local deadline=os.clock()+25
     while pending>0 and os.clock()<deadline do task.wait(.1) end

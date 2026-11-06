@@ -5,6 +5,8 @@ local Players=game:GetService('Players')
 local RS=game:GetService('ReplicatedStorage')
 local Run=game:GetService('RunService')
 local UIS=game:GetService('UserInputService')
+local InputHints=require(game:GetService('ReplicatedStorage'):WaitForChild('InputHints'))
+local RankCatalog=require(RS:WaitForChild('RankCatalog'))
 local player=Players.LocalPlayer
 local state=RS:WaitForChild('LobbyState')
 local bridge
@@ -13,7 +15,7 @@ local CIRCLE_COUNT,PROMPT_DISTANCE,REFRESH_SECONDS=20,12,.2
 local ZONE_RADIUS,ZONE_HEIGHT,LOCK_MARGIN=8,10.5,.8    -- LobbyZone is a cylinder: radius 8, 10 studs tall
 local ENTRY_RADIUS_SLACK=1                            -- anywhere inside the cylinder (radius 8.5); the server allows Radius+5 for lag
 local ENTRY_TRIES=4                                   -- retries per visit (a reply can be a lag rejection)
-local LABEL_SHOW_DISTANCE,LABEL_RISE=36,3.5 -- circle sign: centre of the circle, inside the cylinder
+local LABEL_SHOW_DISTANCE,LABEL_RISE=95,12.5 -- circle sign: floats above the circle, clear of the 10.5-stud glowing zone; 95 so the outer-ring circles (72 studs out) read from spawn
 local LABEL_WIDTH,LABEL_HEIGHT=260,84
 local TOKEN_ICON,ROBUX_ICON,COSMETIC_ICON='rbxassetid://73345115390797','rbxassetid://112368980987150','rbxassetid://106304373894739'
 local COLORS={Free=Color3.fromRGB(120,235,140),Setup=Color3.fromRGB(255,170,60),Open=Color3.fromRGB(170,120,255),Full=Color3.fromRGB(255,90,90),Starting=Color3.fromRGB(255,90,90)}
@@ -46,25 +48,35 @@ task.spawn(function()
  local candidate=menu:WaitForChild('LobbyMenuBridge')
  if candidate:IsA('BindableEvent')then bridge=candidate end
 end)
+-- Store signs are fixed-pixel billboards: on a phone 260 px is a third of the screen (owner 2026-10-24), so touch
+-- screens draw them at SIGN_TOUCH_SCALE.
+local SIGN_TOUCH_SCALE,SIGN_PHONE_SCALE=.68,.5 -- tablets / phones (owner 2026-10-24: still too big on phones at .68)
+local function signScale()
+ if not InputHints.IsMobile()then return 1 end
+ local vp=workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1024,768)
+ return math.min(vp.X,vp.Y)<500 and SIGN_PHONE_SCALE or SIGN_TOUCH_SCALE -- a phone in landscape is under 500 px tall
+end
 local function billboard(anchor,name,icon,rise)
  local gui=Instance.new('BillboardGui');gui.Name=name;gui.Adornee=anchor
- gui.Size=UDim2.fromOffset(LABEL_WIDTH,icon and LABEL_HEIGHT+50 or LABEL_HEIGHT);gui.StudsOffsetWorldSpace=Vector3.new(0,rise,0)
+ local k=signScale()
+ gui.Size=UDim2.fromOffset(LABEL_WIDTH*k,(icon and LABEL_HEIGHT+50 or LABEL_HEIGHT)*k);gui.StudsOffsetWorldSpace=Vector3.new(0,rise,0)
  gui.AlwaysOnTop=true;gui.MaxDistance=math.huge;-- shown/hidden by character distance in refreshWorld; MaxDistance would measure from the zoomed-out camera
  gui.LightInfluence=0;gui.Enabled=false;gui.Parent=anchor
  local top=0
  if icon then
   local image=Instance.new('ImageLabel');image.Name='Icon';image.BackgroundTransparency=1
-  image.AnchorPoint=Vector2.new(.5,0);image.Position=UDim2.fromScale(.5,0);image.Size=UDim2.fromOffset(48,48);image.Image=icon;image.Parent=gui;top=50
+  image.AnchorPoint=Vector2.new(.5,0);image.Position=UDim2.fromScale(.5,0);image.Size=UDim2.fromOffset(48*k,48*k);image.Image=icon;image.Parent=gui;top=50*k
  end
  local title=Instance.new('TextLabel');title.Name='Title';title.BackgroundTransparency=1
- title.AnchorPoint=Vector2.new(.5,0);title.Position=UDim2.new(.5,0,0,top);title.Size=UDim2.new(1,0,0,36);title.Font=Enum.Font.FredokaOne
- title.TextSize=26;title.TextColor3=Color3.fromRGB(244,236,210);title.TextStrokeColor3=Color3.fromRGB(14,8,24);title.TextStrokeTransparency=0
+ title.AnchorPoint=Vector2.new(.5,0);title.Position=UDim2.new(.5,0,0,top);title.Size=UDim2.new(1,0,0,36*k);title.Font=Enum.Font.FredokaOne
+ title.TextSize=math.floor(26*k+.5);title.TextColor3=Color3.fromRGB(244,236,210);title.TextStrokeColor3=Color3.fromRGB(14,8,24);title.TextStrokeTransparency=0
  title.TextXAlignment=Enum.TextXAlignment.Center;title.TextWrapped=true;title.Parent=gui
- local detail=title:Clone();detail.Name='Details';detail.Position=UDim2.new(.5,0,0,top+38);detail.Size=UDim2.new(1,0,0,40);detail.TextSize=16;detail.TextColor3=Color3.fromRGB(244,236,210);detail.Parent=gui
+ local detail=title:Clone();detail.Name='Details';detail.Position=UDim2.new(.5,0,0,top+38*k);detail.Size=UDim2.new(1,0,0,40*k);detail.TextSize=math.floor(16*k+.5);detail.Visible=k>=SIGN_TOUCH_SCALE;-- phones: icon + name only; the small line would be unreadable
+ detail.TextColor3=Color3.fromRGB(244,236,210);detail.Parent=gui
  return gui,title,detail
 end
--- Circle sign: a real flat sign at the exact centre of the circle (client-only part under the camera) that turns to
--- face the camera every frame, so it always reads as sitting in the middle of the ring.
+-- Circle sign: a real flat sign floating above the centre of the circle (client-only part under the camera) that turns to
+-- face the camera every frame, so it reads as the circle's banner and never covers the players standing inside.
 local signs={} -- [part]=pad
 local function circleSign(pad)
  local part=Instance.new('Part');part.Name='LobbyCircleSign';part.Anchored=true;part.CanCollide=false;part.CanQuery=false;part.CanTouch=false
@@ -74,6 +86,7 @@ local function circleSign(pad)
  local title=Instance.new('TextLabel');title.Name='Title';title.BackgroundTransparency=1;title.Size=UDim2.fromScale(1,.55)
  title.Font=Enum.Font.FredokaOne;title.TextSize=46;title.TextColor3=Color3.fromRGB(244,236,210);title.TextStrokeColor3=Color3.fromRGB(14,8,24);title.TextStrokeTransparency=0
  title.TextXAlignment=Enum.TextXAlignment.Center;title.Parent=gui
+ local badge=Instance.new('ImageLabel');badge.Name='HostRank';badge.BackgroundTransparency=1;badge.Size=UDim2.fromOffset(44,44);badge.Position=UDim2.fromOffset(0,6);badge.ScaleType=Enum.ScaleType.Fit;badge.Visible=false;badge.Parent=gui
  local detail=title:Clone();detail.Name='Details';detail.Position=UDim2.fromScale(0,.55);detail.Size=UDim2.fromScale(1,.4);detail.TextSize=26;detail.Parent=gui
  part.Parent=workspace.CurrentCamera
  signs[part]=pad
@@ -140,9 +153,21 @@ local function refreshWorld()
    local status=model:GetAttribute('Status')or'Setup';local color=COLORS[status]or COLORS.Setup
    local owner=model:GetAttribute('OwnerName')or'Host';local count=model:GetAttribute('Count')or 0;local size=model:GetAttribute('Size')or 0
    local access=model:GetAttribute('Access')or'Public'
-   entry.title.Text=status=='Free'and('HOST A RUN')or(string.upper(owner).."'S RUN")
+   entry.title.Text=status=='Free'and('START A RUN')or(string.upper(owner).."'S RUN")
    entry.title.TextColor3=color
-   entry.detail.Text=status=='Free'and'Walk in to host'
+   local ownerId=tonumber(model:GetAttribute('OwnerUserId'))
+   local host=ownerId and Players:GetPlayerByUserId(ownerId)
+   local badge=entry.gui:FindFirstChild('HostRank')
+   local showRank=status~='Free' and host~=nil
+   if badge and badge:IsA('ImageLabel') then
+    badge.Visible=showRank
+    badge.Image=host and RankCatalog.Get(host:GetAttribute('RR')).icon or ''
+   end
+   entry.title.Position=UDim2.fromOffset(showRank and 48 or 0,0)
+   entry.title.Size=UDim2.new(1,showRank and -48 or 0,.55,0)
+   entry.title.TextScaled=true
+
+   entry.detail.Text=status=='Free'and'Walk in to start your own'
     or status=='Setup'and'Host is choosing settings'
     or status=='Starting'and'Starting...'
     or status=='Full'and(count..' / '..size..'  FULL')
@@ -220,7 +245,9 @@ local function cameraMode(enabled)
   player.CameraMode=Enum.CameraMode.Classic;player.CameraMaxZoomDistance=MAX_ZOOM;player.CameraMinZoomDistance=MIN_ZOOM
  else
   if savedCamera then
-   player.CameraMinZoomDistance=savedCamera.min;player.CameraMaxZoomDistance=savedCamera.max;player.CameraMode=savedCamera.mode
+   -- Missions are first person. The saved mode can be the spectator's Classic (left a run while dead), which kept
+   -- the next mission in third person.
+   player.CameraMinZoomDistance=savedCamera.min;player.CameraMaxZoomDistance=savedCamera.max;player.CameraMode=Enum.CameraMode.LockFirstPerson
    UIS.MouseBehavior=savedCamera.mouse;UIS.MouseIconEnabled=savedCamera.icon
    local camera=savedCamera.camera
    if player:GetAttribute('MissionActive')~=true and camera==workspace.CurrentCamera and camera and camera.CameraType==Enum.CameraType.Custom then
@@ -246,12 +273,15 @@ end
 Run.PreRender:Connect(function(dt)
  local enabled=menuActive();cameraMode(enabled)
  if enabled then
-  player.CameraMode=Enum.CameraMode.Classic;player.CameraMaxZoomDistance=MAX_ZOOM;player.CameraMinZoomDistance=MIN_ZOOM
+  -- Only write on a change: per-frame camera writes reach the Roblox settings menu (CoreGui GameSettings re-entrancy error, 2026-10-25).
+  if player.CameraMode~=Enum.CameraMode.Classic then player.CameraMode=Enum.CameraMode.Classic end
+  if player.CameraMaxZoomDistance~=MAX_ZOOM then player.CameraMaxZoomDistance=MAX_ZOOM end;if player.CameraMinZoomDistance~=MIN_ZOOM then player.CameraMinZoomDistance=MIN_ZOOM end
   -- Free cursor, but leave the camera module alone while the right button drags the view (it locks the cursor then).
   if not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)and UIS.MouseBehavior==Enum.MouseBehavior.LockCenter then UIS.MouseBehavior=Enum.MouseBehavior.Default end
-  UIS.MouseIconEnabled=true
+  if not UIS.MouseIconEnabled then UIS.MouseIconEnabled=true end
   local camera=workspace.CurrentCamera;local _,hum=alive()
-  if camera and hum then if camera.CameraType~=Enum.CameraType.Custom then camera.CameraType=Enum.CameraType.Custom end;if camera.CameraSubject~=hum then camera.CameraSubject=hum end end
+  -- InspectActive (InspectCamera, owner 2026-10-29): the Case Board / plaque inspect owns the camera until it glides back.
+  if camera and hum and player:GetAttribute('InspectActive')~=true then if camera.CameraType~=Enum.CameraType.Custom then camera.CameraType=Enum.CameraType.Custom end;if camera.CameraSubject~=hum then camera.CameraSubject=hum end end
   ghostStep();faceSigns()
  end
  accumulator+=dt;if accumulator>=REFRESH_SECONDS then accumulator=0;refreshWorld()end
@@ -312,18 +342,18 @@ local function drawBoard()
  end
  local me=d and d.me
  boardRowsUi.me.Text='YOU  '..(me and me.rank and('#'..me.rank..'  ')or'')..player.DisplayName
- boardRowsUi.meValue.Text=me and(type(me.value)=='number'and me.value>0 and fmt(cat,me.value)or'not ranked yet')or''
+ boardRowsUi.meValue.Text=me and(type(me.value)=='number'and me.value>0 and fmt(cat,me.value)or'no score yet')or''
 end
 local function stepBoard(dir)
  boardCat=(boardCat-1+dir)%#CATS+1;drawBoard()
  local d=boardData[CATS[boardCat].id]
  if not d or os.clock()-(d.time or 0)>60 then requestBoard()end
 end
-local function buildBoard(face)
+local function buildBoard(face,pixelsPerStud)
  if boardGui then boardGui:Destroy()end
  for _,g in face:GetChildren()do if g:IsA('SurfaceGui')then g.Enabled=false end end -- static placeholder from the installer
  local gui=Instance.new('SurfaceGui');gui.Name='LobbyBoardUI';gui.Adornee=face;gui.Face=Enum.NormalId.Front;gui.SizingMode=Enum.SurfaceGuiSizingMode.PixelsPerStud
- gui.PixelsPerStud=40;gui.LightInfluence=0;gui.ResetOnSpawn=false;gui.Parent=player:WaitForChild('PlayerGui')
+ gui.PixelsPerStud=pixelsPerStud or 40;gui.LightInfluence=0;gui.ResetOnSpawn=false;gui.Parent=player:WaitForChild('PlayerGui')
  uiText(gui,'Title',0,.01,1,.09,40,ORANGE,Enum.TextXAlignment.Center).Text='TOP SURVIVORS'
  local ui={rows={},values={}}
  ui.category=uiText(gui,'Category',.16,.105,.68,.075,22,MUTED,Enum.TextXAlignment.Center)
@@ -374,7 +404,20 @@ local function placeAvatar(board)
  if avatarModel then avatarModel:Destroy()end
  avatarModel=copy;copy.Parent=workspace
 end
+-- In a mission the same board is drawn on the van wall (RecoveryModels VanLeaderboard), without the avatar.
+local function vanBoard()
+ local camp=player:GetAttribute('MissionActive')==true and workspace:FindFirstChild('RecoveryCamp')
+ return camp and camp:FindFirstChild('VanLeaderboard',true)
+end
 local function boardTick()
+ local van=not menuActive()and vanBoard()or nil
+ if van then
+  if avatarModel then avatarModel:Destroy();avatarModel=nil end
+  if boardBuilt~=van then boardBuilt=van;buildBoard(van,120)end
+  boardGui.Enabled=true;boardPrompt.Enabled=alive()~=nil;boardPrompt.MaxActivationDistance=10
+  if os.clock()>=nextBoard then requestBoard()end
+  return
+ end
  local world=workspace:FindFirstChild('LobbyWorld');local board=world and world:FindFirstChild('Leaderboard')
  local face=board and board:FindFirstChild('BoardFace',true)
  if not menuActive()or not face then
@@ -388,6 +431,246 @@ local function boardTick()
  if os.clock()-avatarAt>15 or not(avatarModel and avatarModel.Parent)then avatarAt=os.clock();placeAvatar(board)end
 end
 Run.Heartbeat:Connect(boardTick)
+-- ===== Spook-o-Meter (WorldB 2026-10-27) =====
+-- A 4-lane carnival courage meter (LobbyShowcaseServer builds LobbyWorld.Showcase.SpookOMeter). Stand on a lane pad and
+-- a ghost puck in your rank colour shoots up its tube to your RR: one 1.15-stud stripe per rank tier, divisions inside
+-- it. A ring marks the season peak (RRPeak). The lantern burns while this player's first clear of the UTC day still
+-- earns the daily RR bonus (ProgressCore 'clear': RRDay/RRStreak). With 2+ lanes in use the title names the RR
+-- bonuses the group gets by clearing together (RankRating.Gain: friends x1.1, carrying someone 2+ tiers lower x1.1).
+-- Local only: other players' lanes come from their replicated rank attributes.
+local MeterAudio=require(RS:WaitForChild('GameplayAudio'))
+local METER_FLOOR,METER_STRIPE,METER_LOW,METER_HIGH=1.3,1.15,1.95,10.0
+local METER_DEPTH=.1 -- tube axis z in FeatureBase space; LobbyShowcaseServer measures it (model attribute TubeZ)
+local LANE_RADIUS,LANE_RISE,METER_SOUND_RANGE=1.5,1.4,40
+local IDLE=Color3.fromRGB(150,150,160)
+local meter={model=nil,base=nil,lanes={},guis={},ui=nil,lamp=nil,lampLight=nil,acc=0}
+local meterFolder=Instance.new('Folder');meterFolder.Name='SpookOMeterLocal';meterFolder.Parent=workspace
+local meterFriends={}
+local function meterFriend(uid)
+ if meterFriends[uid]==nil then
+  meterFriends[uid]=false
+  task.spawn(function()local ok,f=pcall(function()return player:IsFriendsWith(uid)end);meterFriends[uid]=ok and f==true end)
+ end
+ return meterFriends[uid]
+end
+local function meterHeight(rr)
+ rr=math.max(0,tonumber(rr)or 0)
+ local r=RankCatalog.Get(rr);local t=RankCatalog.Tiers[r.tier];local nt=RankCatalog.Tiers[r.tier+1]
+ local frac=nt and (rr-t.min)/(nt.min-t.min) or math.min(1,(rr-t.min)/math.max(1,t.min))
+ return math.clamp(METER_FLOOR+(r.tier-1+math.clamp(frac,0,.98))*METER_STRIPE,METER_LOW,METER_HIGH),r
+end
+local function meterClear()
+ for _,l in meter.lanes do l.puck:Destroy();l.ring:Destroy()end;table.clear(meter.lanes)
+ for _,g in meter.guis do g:Destroy()end;table.clear(meter.guis)
+ if meter.lampLight then meter.lampLight:Destroy()end
+ meter.model,meter.base,meter.ui,meter.lamp,meter.lampLight=nil,nil,nil,nil,nil
+end
+local function meterGui(face,name,canvas)
+ local g=Instance.new('SurfaceGui');g.Name=name;g.Adornee=face;g.Face=Enum.NormalId.Front;g.SizingMode=Enum.SurfaceGuiSizingMode.FixedSize
+ g.CanvasSize=canvas;g.LightInfluence=0;g.MaxDistance=60;g.ResetOnSpawn=false;g.Parent=player:WaitForChild('PlayerGui')
+ table.insert(meter.guis,g);return g
+end
+local function meterSetup(m)
+ meterClear()
+ local baseP=m:FindFirstChild('FeatureBase');local template=m:FindFirstChild('Puck',true)
+ if not baseP or not template or not template:IsA('BasePart')or not m:FindFirstChild('LanePad1')then return end
+ meter.model,meter.base=m,baseP.CFrame;METER_DEPTH=tonumber(m:GetAttribute('TubeZ'))or .1
+ local rot=meter.base:ToObjectSpace(template.CFrame).Rotation
+ for i=1,4 do
+  local pad=m:FindFirstChild('LanePad'..i)
+  if pad then
+   local x=pad:GetAttribute('LaneX')or 0
+   local puck=template:Clone();puck.Name='Puck'..i;puck.Anchored=true;puck.CanCollide=false;puck.CanQuery=false;puck.CanTouch=false
+   puck.Transparency=.55;puck.Color=IDLE;puck.CFrame=meter.base*CFrame.new(x,METER_LOW,METER_DEPTH)*rot;puck.Parent=meterFolder
+   local glow=Instance.new('PointLight');glow.Range=6;glow.Brightness=0;glow.Shadows=false;glow.Parent=puck
+   local ring=Instance.new('Part');ring.Name='PeakRing'..i;ring.Shape=Enum.PartType.Cylinder;ring.Size=Vector3.new(.08,1.06,1.06)
+   ring.Material=Enum.Material.Neon;ring.Anchored=true;ring.CanCollide=false;ring.CanQuery=false;ring.CanTouch=false;ring.CastShadow=false
+   ring.Transparency=1;ring.Parent=meterFolder
+   meter.lanes[i]={pad=pad,x=x,rot=rot,puck=puck,glow=glow,ring=ring,occupant=nil,rr=nil,h=METER_LOW,from=METER_LOW,target=METER_LOW,t0=0,stripe=0,rang=true}
+  end
+ end
+ local ui={}
+ local titleFace,laneFace=m:FindFirstChild('TitleFace'),m:FindFirstChild('LaneFace')
+ if titleFace then
+  local g=meterGui(titleFace,'SpookOMeterTitle',Vector2.new(520,90))
+  ui.title=uiText(g,'Title',0,0,1,.52,34,GOLD,Enum.TextXAlignment.Center);ui.title.Text='SPOOK-O-METER';ui.title.FontFace=Font.new('rbxasset://fonts/families/PressStart2P.json')
+  ui.line=uiText(g,'Line',0,.52,1,.48,22,CREAM,Enum.TextXAlignment.Center)
+ end
+ if laneFace then
+  local g=meterGui(laneFace,'SpookOMeterLanes',Vector2.new(840,70))
+  ui.names,ui.ranks={},{}
+  for i=1,4 do
+   ui.names[i]=uiText(g,'Name'..i,(i-1)*.25,0,.25,.5,22,CREAM,Enum.TextXAlignment.Center)
+   ui.ranks[i]=uiText(g,'Rank'..i,(i-1)*.25,.5,.25,.5,17,MUTED,Enum.TextXAlignment.Center)
+  end
+ end
+ meter.ui=ui
+ local lamp=m:FindFirstChild('Lamp',true)
+ if lamp and lamp:IsA('BasePart')then
+  meter.lamp=lamp
+  local l=Instance.new('PointLight');l.Name='SpookLampLocal';l.Range=9;l.Brightness=0;l.Color=Color3.fromRGB(255,214,140);l.Shadows=false;l.Parent=lamp
+  meter.lampLight=l
+ end
+end
+-- Each player belongs to the nearest pad in range; each pad to the nearest such player.
+local function meterOccupancy()
+ local pick={}
+ for _,q in Players:GetPlayers()do
+  local c=q.Character;local root=c and c:FindFirstChild('HumanoidRootPart');local h=c and c:FindFirstChildOfClass('Humanoid')
+  if root and h and h.Health>0 then
+   local bestI,bd=nil,LANE_RADIUS
+   for i,l in meter.lanes do
+    local d=root.Position-l.pad.Position;local flat=Vector3.new(d.X,0,d.Z).Magnitude
+    if flat<bd and math.abs(d.Y)<6 then bestI,bd=i,flat end
+   end
+   if bestI and(not pick[bestI]or bd<pick[bestI].d)then pick[bestI]={q=q,d=bd}end
+  end
+ end
+ return pick
+end
+local function laneAim(l,q,launch)
+ l.occupant=q;l.rr=q and q:GetAttribute('RR')or nil
+ local h,r=meterHeight(l.rr or 0)
+ l.from=launch and METER_LOW or l.h;l.target=q and h or METER_LOW;l.t0=os.clock();l.rang=q==nil
+ l.stripe=math.floor((l.from-METER_FLOOR)/METER_STRIPE)
+ if q then
+  l.puck.Color=r.color;l.puck.Transparency=0;l.glow.Color=r.color;l.glow.Brightness=.7
+  local peak=tonumber(q:GetAttribute('RRPeak'))or 0
+  local ph,pr=meterHeight(peak)
+  if peak>(l.rr or 0)and ph>h+.15 then
+   l.ring.Color=pr.color;l.ring.Transparency=.3;l.ring.CFrame=meter.base*CFrame.new(l.x,ph,METER_DEPTH)*CFrame.Angles(0,0,math.pi/2)
+  else l.ring.Transparency=1 end
+ else l.puck.Color=IDLE;l.puck.Transparency=.55;l.glow.Brightness=0;l.ring.Transparency=1 end
+end
+local function meterDraw()
+ local ui=meter.ui;if not ui then return end
+ local today=math.floor(workspace:GetServerTimeNow()/86400)
+ local day=tonumber(player:GetAttribute('RRDay'))or 0
+ local ready=day~=today
+ local streak=day==today-1 and (tonumber(player:GetAttribute('RRStreak'))or 0)+1 or 1
+ local mult=streak>=(player:GetAttribute('RRStreakDays')or 3)and player:GetAttribute('RRStreakMult')or player:GetAttribute('RRDailyMult')
+ local used,lo,hi,mine=0,math.huge,0,false
+ for i,l in meter.lanes do
+  local q=l.occupant
+  if q then
+   used+=1;local tier=RankCatalog.Get(q:GetAttribute('RR')or 0).tier;lo=math.min(lo,tier);hi=math.max(hi,tier);if q==player then mine=true end
+  end
+  if ui.names then
+   ui.names[i].Text=q and q.DisplayName or 'STEP ON A PAD';ui.names[i].TextColor3=q and CREAM or MUTED
+   local rank=q and RankCatalog.Get(q:GetAttribute('RR')or 0)
+   local text=rank and rank.name or ''
+   if q==player then local rr=q:GetAttribute('RR')or 0;local _,nextAt=RankCatalog.Progress(rr);text=nextAt and(text..'  -  '..math.max(0,nextAt-rr)..' RR to next rank')or(text..'  -  top rank!')end
+   ui.ranks[i].Text=text;ui.ranks[i].TextColor3=rank and rank.color or MUTED
+  end
+ end
+ if ui.line then
+  local bonus={}
+  if used>=2 and hi-lo>=2 then table.insert(bonus,'carry +10% RR')end
+  if mine then for _,l in meter.lanes do if l.occupant and l.occupant~=player and meterFriend(l.occupant.UserId)then table.insert(bonus,'friends +10% RR');break end end end
+  if used>=2 and #bonus>0 then ui.line.Text='TOGETHER: '..table.concat(bonus,', ');ui.line.TextColor3=ORANGE
+  elseif ready then ui.line.Text='FIRST CLEAR TODAY: x'..tostring(mult or 1.5)..' RR'..(streak>=(player:GetAttribute('RRStreakDays')or 3)and'  ('..streak..'-day streak)'or'');ui.line.TextColor3=GOLD
+  else ui.line.Text='Daily RR bonus used. Next at '..os.date('%H:%M',(today+1)*86400);ui.line.TextColor3=MUTED end
+ end
+ if meter.lamp then meter.lamp.Color=ready and Color3.new(1,1,1)or Color3.fromRGB(60,56,52)end
+ if meter.lampLight then meter.lampLight.Brightness=ready and 1 or 0 end
+end
+Run.Heartbeat:Connect(function(dt)
+ local world=workspace:FindFirstChild('LobbyWorld');local show=world and world:FindFirstChild('Showcase')
+ local m=show and show:FindFirstChild('SpookOMeter')
+ if m~=meter.model or (m and #meter.lanes==0)then if m then meterSetup(m)else meterClear()end end
+ local on=meter.model~=nil and menuActive()
+ for _,g in meter.guis do g.Enabled=on end
+ if not on then return end
+ meter.acc+=dt
+ if meter.acc>=.1 then -- occupancy and labels at 10 Hz; the pucks move every frame
+  meter.acc=0
+  local pick=meterOccupancy()
+  for i,l in meter.lanes do
+   local q=pick[i]and pick[i].q or nil
+   if q~=l.occupant then laneAim(l,q,q~=nil)
+   elseif q and q:GetAttribute('RR')~=l.rr then laneAim(l,q,false)end -- RR changed while standing (rank-up arrives)
+  end
+  meterDraw()
+ end
+ local now=os.clock();local root=alive()
+ for i,l in meter.lanes do
+  local a=math.clamp((now-l.t0)/LANE_RISE,0,1);local e=1-(1-a)^3
+  local h=l.from+(l.target-l.from)*e;l.h=h
+  local bob=l.occupant and a>=1 and math.sin(now*2.2+i)*.06 or 0
+  l.puck.CFrame=meter.base*CFrame.new(l.x,h+bob,METER_DEPTH)*l.rot
+  local near=root~=nil and (root.Position-l.pad.Position).Magnitude<=METER_SOUND_RANGE
+  local stripe=math.floor((h-METER_FLOOR)/METER_STRIPE)
+  if l.occupant and l.target>l.from and stripe>l.stripe then l.stripe=stripe;if near then MeterAudio.Play('UiClick',l.puck.Position)end end
+  if a>=1 and not l.rang then l.rang=true;if near then MeterAudio.Play('DinnerBell',l.puck.Position)end
+   if l.occupant==player then -- my puck rang the bell: a grin and my rank pops up (local only)
+    local r=RankCatalog.Get(player:GetAttribute('RR')or 0);local t=workspace:GetServerTimeNow()
+    player:SetAttribute('FaceBeat','grin');player:SetAttribute('FaceBeatUntil',t+2.5);player:SetAttribute('ReactPop',string.upper(r.name)..'!');player:SetAttribute('ReactPopShake',0);player:SetAttribute('ReactPopAt',t)
+   end
+  end
+ end
+end)
+-- ===== Crew Trophy (2026-10-26) =====
+-- The plate engraves this viewer's crew record (ProgressService.CrewRecord through the lobby 'crewRecord' request):
+-- the party's best level cleared together, or their 3 best crews when solo. The ring glows for a record set today.
+local trophy={seq=8000000,waiting={},data=nil,next=0,model=nil,gui=nil,ui=nil,glow=nil}
+local TROPHY_RANGE=60
+local function crewRequest()
+ trophy.seq+=1;trophy.waiting[trophy.seq]=true;trophy.next=os.clock()+20
+ lobbyEvent:FireServer(trophy.seq,'crewRecord',{})
+end
+local function crewDraw()
+ local ui,d=trophy.ui,trophy.data;if not ui then return end
+ local lines={'','','',''};local today=false
+ if not d or d.mode=='none'then
+  ui.head.Text='CREW TROPHY';ui.big.Text='';lines[1]='Clear a level with a friend';lines[2]='to engrave your names here.'
+ elseif d.mode=='party'then
+  if (d.level or 0)<1 then ui.head.Text='NEW CREW';ui.big.Text='';lines[1]='No level cleared together yet.';lines[2]='Clear one to engrave your names!'
+  else
+   today=d.today==true
+   ui.head.Text=today and 'NEW RECORD TODAY!' or 'OUR CREW RECORD';ui.big.Text='LEVEL '..d.level
+   lines[1]=(d.names and d.names[1] or '?')..' & '..(d.names and d.names[2] or '?');lines[2]='Clear Level '..(d.level+1)..' together to beat it'
+  end
+ else
+  ui.head.Text='MY BEST CREWS';ui.big.Text=''
+  for i,r in d.rows or {}do lines[i]='Level '..r.level..'  with '..r.name..(r.today and '  (today!)' or '');if r.today then today=true end end
+  lines[4]='Party up and beat them'
+ end
+ for i=1,4 do ui.lines[i].Text=lines[i]end
+ ui.head.TextColor3=today and ORANGE or GOLD
+ if trophy.glow then trophy.glow.LocalTransparencyModifier=0;trophy.glow.Transparency=today and 0 or .8 end
+end
+local function crewSetup(m)
+ if trophy.gui then trophy.gui:Destroy()end;trophy.gui,trophy.ui,trophy.glow=nil,nil,nil;trophy.model=m
+ local face=m and m:FindFirstChild('EngraveFace');if not face then return end
+ local g=Instance.new('SurfaceGui');g.Name='CrewTrophyPlate';g.Adornee=face;g.Face=Enum.NormalId.Front;g.SizingMode=Enum.SurfaceGuiSizingMode.FixedSize
+ g.CanvasSize=Vector2.new(520,340);g.LightInfluence=0;g.MaxDistance=45;g.ResetOnSpawn=false;g.Parent=player:WaitForChild('PlayerGui')
+ local ink=Color3.fromRGB(60,40,16)
+ local ui={lines={}}
+ ui.head=uiText(g,'Head',.04,.03,.92,.16,30,GOLD,Enum.TextXAlignment.Center)
+ ui.big=uiText(g,'Big',.04,.2,.92,.26,64,CREAM,Enum.TextXAlignment.Center)
+ for i=1,4 do ui.lines[i]=uiText(g,'Line'..i,.04,.47+(i-1)*.13,.92,.12,24,i==4 and MUTED or CREAM,Enum.TextXAlignment.Center)end
+ for _,l in g:GetDescendants()do if l:IsA('TextLabel')then l.TextStrokeColor3=ink;l.TextStrokeTransparency=.2 end end
+ trophy.gui,trophy.ui=g,ui
+ local glow=m:FindFirstChild('Glow',true);if glow and glow:IsA('BasePart')then trophy.glow=glow end
+ crewDraw()
+end
+lobbyEvent.OnClientEvent:Connect(function(action,data)
+ if action~='response'or type(data)~='table'or not trophy.waiting[data.id]then return end
+ trophy.waiting[data.id]=nil
+ if data.ok and type(data.data)=='table'then trophy.data=data.data else trophy.next=math.min(trophy.next,os.clock()+3)end -- busy or loading: retry soon
+ crewDraw()
+end)
+player:GetAttributeChangedSignal('LobbyPartyId'):Connect(function()trophy.next=os.clock()+.6 end) -- joined/left: re-engrave shortly
+Run.Heartbeat:Connect(function()
+ local world=workspace:FindFirstChild('LobbyWorld');local show=world and world:FindFirstChild('Showcase')
+ local m=show and show:FindFirstChild('CrewTrophy')
+ if m~=trophy.model then crewSetup(m)end
+ local on=m~=nil and menuActive()
+ if trophy.gui then trophy.gui.Enabled=on end
+ if not on then return end
+ local root=alive()
+ if root and os.clock()>=trophy.next and (root.Position-m:GetPivot().Position).Magnitude<=TROPHY_RANGE then crewRequest()end
+end)
 player.CharacterAppearanceLoaded:Connect(function()avatarAt=0 end)
 player:GetAttributeChangedSignal('MissionActive'):Connect(function()cameraMode(menuActive());refreshWorld()end)
 state:GetAttributeChangedSignal('Mode'):Connect(function()cameraMode(menuActive());refreshWorld()end)

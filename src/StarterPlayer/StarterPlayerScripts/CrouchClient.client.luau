@@ -3,6 +3,7 @@
 local Players=game:GetService('Players')
 local RS=game:GetService('ReplicatedStorage')
 local UIS=game:GetService('UserInputService')
+local InputHints=require(game:GetService('ReplicatedStorage'):WaitForChild('InputHints'))
 local RunService=game:GetService('RunService')
 local player=Players.LocalPlayer
 local event=RS:WaitForChild('CrouchEvent')
@@ -30,11 +31,13 @@ local toast=Instance.new('TextLabel');toast.Name='CrouchToast';toast.AnchorPoint
 toast.Size=UDim2.fromOffset(240,24);toast.BackgroundTransparency=1;toast.Font=Enum.Font.GothamMedium;toast.TextSize=14
 toast.TextColor3=Color3.fromRGB(236,217,176);toast.TextStrokeTransparency=.6;toast.Text='No room to stand up here';toast.Visible=false;toast.Parent=gui
 local toastUntil=0
+local toastAlpha=0
 event.OnClientEvent:Connect(function(what) if what=='blocked' then toastUntil=os.clock()+1.6 end end)
 
 -- The camera follows the root, not the head, so it is lowered separately (Y only; the closet peek owns X/Z).
 local CAMERA_DROP=1.75
 local camDrop=0
+local camDropVel=0 -- spring velocity: the drop starts and stops softly instead of jumping to full speed
 local spin=0
 local function lerpRate(move) return 3+move*6 end
 RunService.RenderStepped:Connect(function(dt)
@@ -42,19 +45,19 @@ RunService.RenderStepped:Connect(function(dt)
   local hum=player.Character and player.Character:FindFirstChildOfClass('Humanoid')
   local target=player:GetAttribute('Crouching') and CAMERA_DROP or 0
   if hum and (target>0 or camDrop>.001) then
-   camDrop+=(target-camDrop)*math.min(1,dt*9)
-   if target==0 and camDrop<.01 then camDrop=0 end
+   local step=math.min(dt,.05);camDropVel+=((target-camDrop)*144-24*camDropVel)*step;camDrop+=camDropVel*step
+   if target==0 and camDrop<.01 and math.abs(camDropVel)<.05 then camDrop=0;camDropVel=0 end
    local o=hum.CameraOffset;hum.CameraOffset=Vector3.new(o.X,-camDrop,o.Z)
   end
  end
  local camera=workspace.CurrentCamera
  local small=camera and camera.ViewportSize.Y<500
- button.Visible=player:GetAttribute('MissionActive')==true and UIS.TouchEnabled and not UIS:GetLastInputType().Name:find('Gamepad')
+ button.Visible=player:GetAttribute('MissionActive')==true and InputHints.IsMobile()
  button.Size=UDim2.fromOffset(small and 54 or 64,small and 54 or 64)
  button.Position=UDim2.new(1,small and -146 or -170,1,small and -104 or -282)
  local crouched=player:GetAttribute('Crouching')==true
  button.Text=crouched and 'STAND' or 'CROUCH';button.BackgroundTransparency=crouched and .05 or .35
- toast.Visible=os.clock()<toastUntil
+ toastAlpha+=((os.clock()<toastUntil and 1 or 0)-toastAlpha)*math.min(1,dt*10);toast.Visible=toastAlpha>.01;toast.TextTransparency=1-toastAlpha;toast.TextStrokeTransparency=1-toastAlpha*.4
  -- every crouched player's mini body waddles: a side-to-side rock and a little squash bob, livelier when moving
  spin+=dt
  for _,p in Players:GetPlayers() do

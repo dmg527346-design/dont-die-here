@@ -61,6 +61,8 @@ local function eventOn()return state~=nil and type(state.event)=='table'and stat
 local function serverNow()return os.time()+timeOffset end
 local readyBefore={} -- quest keys that were ready in the last state (for the completion toast)
 local onState -- forward: redraw hook
+local onMastery -- forward: mastery HUD hook (old state, new state)
+local drawBoards -- forward: lobby + van mastery boards
 
 local function keyOf(tab,q)return tab..':'..tostring(q.id)end
 local function collectReady(s)
@@ -84,9 +86,11 @@ local function setState(s,fromPush)
  if fromPush and state then
   for k,q in ready do if not readyBefore[k]and q.text then toast(q.text)end end
  end
+ local old=state
  readyBefore=ready;state=s
  p:SetAttribute('QuestReadyCount',tonumber(s.readyCount)or 0) -- lobby button badge + van terminal read this
  if onState then onState()end
+ if onMastery then onMastery(old,s)end
 end
 
 local function mockState()
@@ -153,7 +157,7 @@ local bodyPad=Instance.new('UIPadding');bodyPad.PaddingTop=UDim.new(0,6);bodyPad
 local footer=Instance.new('Frame');footer.Name='Footer';footer.BackgroundTransparency=1;footer.Parent=plate
 local strip=Instance.new('Frame');strip.Name='Bonus';strip.BackgroundColor3=colors.card;strip.Parent=footer;UI.corner(strip,14)
 local stripStroke=UI.stroke(strip,colors.greyDark,2,0)
-local stripText=UI.text(strip,'Text','',UI.Font.Bold,16);UI.fit(stripText,11,17)
+local stripText=UI.text(strip,'Text','',UI.Font.Bold,16);UI.fit(stripText,8,17)
 local stripPips=Instance.new('Frame');stripPips.Name='Pips';stripPips.BackgroundTransparency=1;stripPips.Parent=strip
 local pipList=Instance.new('UIListLayout');pipList.FillDirection=Enum.FillDirection.Horizontal;pipList.Padding=UDim.new(0,4);pipList.VerticalAlignment=Enum.VerticalAlignment.Center;pipList.Parent=stripPips
 local stripClaim=UI.button(strip,'Claim','CLAIM REWARD','use')
@@ -165,11 +169,15 @@ local retry=UI.button(plate,'Retry','RETRY','muted');retry.AnchorPoint=Vector2.n
 
 -- Layout ------------------------------------------------------------------------------------------
 local compact=false
+local phone=false -- touch screens: smaller panel, slimmer rows, tabs and footer
+local InputHints=require(game:GetService('ReplicatedStorage'):WaitForChild('InputHints'))
 local function layout()
  local cam=workspace.CurrentCamera;local view=cam and cam.ViewportSize or Vector2.new(1280,720)
  local inset=gui.AbsoluteSize.Magnitude>0 and gui.AbsoluteSize or view
  compact=inset.Y<430 or inset.X<560
+ phone=compact and InputHints.Get()=='touch'
  local w=math.min(MAX_W,inset.X-MARGIN*2-(compact and 0 or 40))
+ if phone then w=math.min(w,math.floor(inset.X*.84))end
  local h=math.min(MAX_H,inset.Y-MARGIN*2)
  holder.Size=UDim2.fromOffset(w,h);holder.Position=UDim2.fromScale(.5,.5)
  local side=compact and 12 or 20
@@ -181,18 +189,18 @@ local function layout()
  sub.Position=UDim2.fromOffset(0,compact and 28 or 40);sub.Size=UDim2.new(.62,0,0,compact and 18 or 22)
  timer.AnchorPoint=Vector2.new(1,0);timer.Position=UDim2.new(1,compact and -20 or 0,0,compact and 4 or 12);timer.Size=UDim2.new(.38,0,0,22)
  local tabY=(compact and 6 or 10)+headH
- local tabH=compact and 44 or 46
+ local tabH=phone and 32 or compact and 44 or 46
  tabBar.Position=UDim2.fromOffset(side,tabY);tabBar.Size=UDim2.new(1,-side*2-(compact and 46 or 0),0,tabH)
  local shownTabs=0;for _,t in TABS do if not t.event or eventOn()then shownTabs+=1 end end
  for key,b in tabButtons do b.Visible=key~='event'or eventOn();b.Size=UDim2.new(1/math.max(1,shownTabs),-6,1,0)end
- local footH=compact and 58 or 64
+ local footH=phone and 42 or compact and 58 or 64
  footer.AnchorPoint=Vector2.new(0,1);footer.Position=UDim2.new(0,side,1,-(compact and 8 or 12));footer.Size=UDim2.new(1,-side*2,0,footH)
  local bodyTop=tabY+tabH+8
  body.Position=UDim2.fromOffset(side-6,bodyTop);body.Size=UDim2.new(1,-side*2+12,1,-bodyTop-footH-(compact and 14 or 20))
  local allW=compact and 140 or 190
  claimAll.AnchorPoint=Vector2.new(1,.5);claimAll.Position=UDim2.fromScale(1,.5);claimAll.Size=UDim2.new(0,allW,1,-6)
  strip.Position=UDim2.new();strip.Size=UDim2.new(1,-allW-10,1,0)
- stripText.Position=UDim2.fromOffset(14,0);stripText.Size=UDim2.new(.52,-14,1,0)
+ stripText.Position=UDim2.fromOffset(compact and 8 or 14,4);stripText.Size=UDim2.new(.52,compact and -8 or -14,1,-8)
  stripPips.AnchorPoint=Vector2.new(0,.5);stripPips.Position=UDim2.new(.54,0,.5,0);stripPips.Size=UDim2.new(.16,0,0,20)
  stripClaim.AnchorPoint=Vector2.new(1,.5);stripClaim.Position=UDim2.new(1,-6,.5,0);stripClaim.Size=UDim2.new(.26,-6,1,-12)
 end
@@ -367,28 +375,28 @@ local function actionButton(parent,text,kind,width,height)
  return b
 end
 local function questCard(tab,q,i,canReroll)
- local h=compact and 70 or 84
+ local h=phone and 50 or compact and 70 or 84
  local c=card(i,h)
  local rim=UI.stroke(c,colors.greyDark,2.5,0)
- local iconSize=h-20
- local icon=iconBadge(c,q.icon,iconSize);icon.Position=UDim2.fromOffset(10,10)
- local btnW,btnH=compact and 104 or 128,compact and 44 or 46
- local left=iconSize+22
- local name=UI.text(c,'Name',tostring(q.text or q.id),UI.Font.Bold,compact and 16 or 18);UI.fit(name,12,compact and 16 or 19)
- name.Position=UDim2.fromOffset(left,compact and 6 or 8);name.Size=UDim2.new(1,-left-btnW-170,0,compact and 22 or 24)
+ local iconSize=phone and 34 or h-20
+ local icon=iconBadge(c,q.icon,iconSize);icon.Position=UDim2.fromOffset(phone and 8 or 10,phone and 8 or 10)
+ local btnW,btnH=phone and 86 or compact and 104 or 128,phone and 32 or compact and 44 or 46
+ local left=iconSize+(phone and 16 or 22)
+ local name=UI.text(c,'Name',tostring(q.text or q.id),UI.Font.Bold,phone and 13 or compact and 16 or 18);UI.fit(name,phone and 9 or 12,phone and 13 or compact and 16 or 19)
+ name.Position=UDim2.fromOffset(left,phone and 4 or compact and 6 or 8);name.Size=UDim2.new(1,-left-btnW-170,0,compact and 22 or 24)
  if not compact and q.hint then
   local hint=UI.text(c,'Hint',tostring(q.hint),UI.Font.Body,13,colors.muted);UI.fit(hint,10,13)
   hint.Position=UDim2.fromOffset(left,32);hint.Size=UDim2.new(1,-left-btnW-120,0,16)
  end
  local target=math.max(1,tonumber(q.target)or 1);local progress=math.min(target,tonumber(q.progress)or 0)
  local bar=progressBar(c,progress/target,q.ready or q.claimed)
- bar.Position=UDim2.new(0,left,1,compact and -22 or -24);bar.Size=UDim2.new(1,-left-btnW-120,0,compact and 10 or 12)
+ bar.Position=UDim2.new(0,left,1,phone and -14 or compact and -22 or -24);bar.Size=UDim2.new(1,-left-btnW-120,0,phone and 7 or compact and 10 or 12)
  local count=UI.text(c,'Count','Done '..fmtNum(progress)..' of '..fmtNum(target),UI.Font.Bold,13,colors.muted)
- count.AnchorPoint=Vector2.new(0,.5);count.Position=UDim2.new(1,-btnW-110,1,compact and -17 or -18);count.Size=UDim2.fromOffset(90,18)
- local chips=rewardChips(c,q.reward,compact and 24 or 28);chips.AnchorPoint=Vector2.new(1,0);chips.Position=UDim2.new(1,-btnW-22,0,compact and 6 or 10)
+ count.AnchorPoint=Vector2.new(0,.5);count.Position=UDim2.new(1,-btnW-110,1,phone and -11 or compact and -17 or -18);count.Size=UDim2.fromOffset(90,phone and 14 or 18);if phone then UI.fit(count,8,11)end
+ local chips=rewardChips(c,q.reward,phone and 18 or compact and 24 or 28);chips.AnchorPoint=Vector2.new(1,0);chips.Position=UDim2.new(1,-btnW-22,0,phone and 4 or compact and 6 or 10)
  if q.claimed then
   c.BackgroundTransparency=.35;rim.Color=DONE_GREEN;rim.Transparency=.4
-  local stamp=UI.text(c,'Stamp','COLLECTED ✓',UI.Font.Display,18,DONE_GREEN);stamp.AnchorPoint=Vector2.new(1,.5);stamp.Position=UDim2.new(1,-16,.5,0)
+  local stamp=UI.text(c,'Stamp','COLLECTED ✓',UI.Font.Display,phone and 13 or 18,DONE_GREEN);stamp.AnchorPoint=Vector2.new(1,.5);stamp.Position=UDim2.new(1,-16,.5,0)
   stamp.Size=UDim2.fromOffset(btnW,30);stamp.TextXAlignment=Enum.TextXAlignment.Center;UI.outline(stamp,2)
  elseif q.ready then
   c:SetAttribute('Ready',true);rim.Color=READY_GOLD;pulsing[rim]=true
@@ -408,12 +416,12 @@ local function questCard(tab,q,i,canReroll)
  return c
 end
 local function chainCard(a,i)
- local h=compact and 74 or 92
+ local h=phone and 56 or compact and 74 or 92
  local c=card(i,h)
  local rim=UI.stroke(c,colors.greyDark,2.5,0)
- local iconSize=h-20
- local icon=iconBadge(c,a.icon,iconSize);icon.Position=UDim2.fromOffset(10,10)
- local left=iconSize+22
+ local iconSize=phone and 36 or h-20
+ local icon=iconBadge(c,a.icon,iconSize);icon.Position=UDim2.fromOffset(phone and 8 or 10,phone and 10 or 10)
+ local left=iconSize+(phone and 16 or 22)
  local btnW,btnH=compact and 104 or 128,compact and 44 or 46
  local tier=math.clamp(tonumber(a.tier)or 0,0,5)
  local targets=type(a.targets)=='table'and a.targets or{}
@@ -480,6 +488,25 @@ local function masteryCard(m)
  end
 end
 
+-- Mastery look shared by the HUD card, the level-up banner and the boards (bronze, silver, gold, master bands).
+local BAND={{3,Color3.fromRGB(205,140,80),'BRONZE'},{6,Color3.fromRGB(200,214,228),'SILVER'},{9,READY_GOLD,'GOLD'},{10,Color3.fromRGB(120,255,200),'MASTER'}}
+local function bandOf(level)
+ for _,b in BAND do if level<=b[1] then return b[2],b[3] end end
+ return BAND[#BAND][2],BAND[#BAND][3]
+end
+local function masteryColor(m)
+ local c=type(m.color)=='table'and m.color or{255,255,255}
+ return Color3.fromRGB(tonumber(c[1])or 255,tonumber(c[2])or 255,tonumber(c[3])or 255)
+end
+local function levelBadge(parent,level,size,complete)
+ local col=level>0 and(bandOf(level))or colors.cardLow
+ local ring=Instance.new('Frame');ring.Name='Level';ring.Size=UDim2.fromOffset(size,size);ring.BackgroundColor3=colors.cardLow;ring.Parent=parent;UI.corner(ring,UDim.new(1,0))
+ UI.stroke(ring,col,math.max(2,math.floor(size*.08)),0)
+ local lv=UI.text(ring,'Lv','LV',UI.Font.Bold,math.floor(size*.2),colors.muted);lv.Size=UDim2.new(1,0,.3,0);lv.Position=UDim2.fromScale(0,.12);lv.TextXAlignment=Enum.TextXAlignment.Center
+ local n=UI.text(ring,'N',complete and'MAX'or tostring(level),UI.Font.Display,math.floor(size*(complete and .3 or .44)),level>0 and col or colors.muted)
+ n.Size=UDim2.new(1,0,.55,0);n.Position=UDim2.fromScale(0,.36);n.TextXAlignment=Enum.TextXAlignment.Center;UI.outline(n,1.5)
+ return ring
+end
 -- Footer strip: daily bonus / weekly chest / nothing on achievements.
 local stripConn
 local function drawFooter()
@@ -677,6 +704,7 @@ gui:GetPropertyChangedSignal('AbsoluteSize'):Connect(function()if isOpen then la
 
 -- The van terminal prompt opens the log (RecoveryModels builds QuestsRewardsPrompt like the other two).
 PPS.PromptTriggered:Connect(function(prompt)
+ if(prompt.Name=='QuestsRewardsPrompt'or prompt.Name=='QuestBoardPrompt'or prompt.Name=='EventStallPrompt')and not InputHints.ConfirmTap()then return end -- phones: a real tap, not a camera swipe
  if prompt.Name=='QuestsRewardsPrompt'or prompt.Name=='QuestBoardPrompt'then openLog('daily')end
  if prompt.Name=='EventStallPrompt'then openLog('event')end
 end)
@@ -713,6 +741,411 @@ toast=function(text)
  if #queue>=4 then return end
  table.insert(queue,tostring(text));showNext()
 end
+
+-- Mastery HUD (PC and console only; touch screens keep the boards): a small card on screen (top right, under the quota
+-- bar, above the run-save tag) showing the mastery you last moved, its level and the
+-- bar to the next level. Points pop out of the bar and a level-up drops a banner; the full view is on the mastery boards.
+local hudGui=Instance.new('ScreenGui');hudGui.Name='MasteryHud';hudGui.DisplayOrder=120;hudGui.ResetOnSpawn=false
+hudGui.ScreenInsets=Enum.ScreenInsets.CoreUISafeInsets;hudGui.Enabled=false;hudGui.Parent=pg
+local hud=Instance.new('TextButton');hud.Name='Card';hud.Text='';hud.AutoButtonColor=false;hud.Selectable=false;hud.Active=false;hud.AnchorPoint=Vector2.new(1,0)
+hud.BackgroundTransparency=1;hud.Parent=hudGui
+-- Card face (owner 2026-10-25, second pass): the lobby buttons' chrome, shared with the rank card (HudCardStyle).
+local cardStyle=require(game:GetService('ReplicatedStorage'):WaitForChild('HudCardStyle')).Build(hud,'MASTERY')
+local hudBadgeHolder=cardStyle.socket
+local hudName=UI.text(hud,'Name','',UI.Font.Display,15);UI.outline(hudName,1.5)
+local hudCount=UI.text(hud,'Count','',UI.Font.Bold,12,colors.muted);hudCount.TextXAlignment=Enum.TextXAlignment.Right
+local function sliceBar(parent,name,image)
+ local i=Instance.new('ImageLabel');i.Name=name;i.BackgroundTransparency=1;i.Image=image;i.ScaleType=Enum.ScaleType.Slice;i.SliceCenter=Rect.new(48,23,464,25);i.SliceScale=.25;i.Parent=parent
+ return i
+end
+-- Consoles (owner 2026-10-25): 30% bigger on a TV, matching the rank card above it (MainMenuClient TV_SCALE).
+if GS:IsTenFootInterface()then local tv=Instance.new('UIScale');tv.Scale=1.3;tv.Parent=hud end
+local hudBar=sliceBar(hud,'Bar','rbxassetid://90113844865582')
+local hudFill=sliceBar(hudBar,'Fill','rbxassetid://137368694415108');hudFill.Size=UDim2.fromScale(0,1)
+local hudMinFill=Instance.new('UISizeConstraint');hudMinFill.MinSize=Vector2.new(24,0);hudMinFill.Parent=hudFill -- keeps both rounded ends
+local hudBoost=UI.text(hud,'Boost','',UI.Font.Bold,10,Color3.fromRGB(150,255,220));hudBoost.TextXAlignment=Enum.TextXAlignment.Center
+hudBoost.BackgroundColor3=Color3.fromRGB(10,24,26);hudBoost.BackgroundTransparency=.1;UI.corner(hudBoost,UDim.new(0,6));UI.stroke(hudBoost,Color3.fromRGB(70,230,190),1.5,0)
+-- The level sits on the bottom row; the socket shows the monster's portrait from the mastery boards instead.
+local hudLevel=UI.text(hud,'Level','',UI.Font.Bold,11,Color3.fromRGB(150,255,220));hudLevel.TextXAlignment=Enum.TextXAlignment.Left
+local portrait -- defined with the mastery boards below
+local hudFocus,hudBadge=nil,nil
+-- In a mission the quota/timer strip (RecoveryQuota) runs across the top: sit just below its lowest visible piece.
+local function hudTop(small)
+ local quota=p:GetAttribute('MissionActive')==true and pg:FindFirstChild('RecoveryQuota')
+ if not(quota and quota:IsA('ScreenGui')and quota.Enabled)then
+  -- Lobby on computer / console: the rank card owns the top-right corner (MainMenuClient QuickPlay.RankCard); sit under it.
+  local qp=pg:FindFirstChild('QuickPlay');local card=qp and qp.Enabled and qp:FindFirstChild('RankCard')
+  if card and card.Visible and card.AbsoluteSize.Y>0 then return math.floor(card.AbsolutePosition.Y+card.AbsoluteSize.Y-hudGui.AbsolutePosition.Y+8)end
+  return small and 44 or 56
+ end
+ local bottom=0
+ for _,d in quota:GetDescendants()do
+  if d:IsA('GuiObject')and d.Visible and d.AbsoluteSize.Y>0 and d.AbsoluteSize.Y<200 then bottom=math.max(bottom,d.AbsolutePosition.Y+d.AbsoluteSize.Y)end
+ end
+ local shift=quota.AbsolutePosition.Y-hudGui.AbsolutePosition.Y -- both ScreenGuis use their own origin
+ return math.max(small and 44 or 56,math.floor(bottom+shift+6))
+end
+local function hudLayout()
+ local small=phone or InputHints.Get()=='touch'
+ local w,h=small and 260 or 330,small and 68 or 84
+ hud.Size=UDim2.fromOffset(w,h);hud.Position=UDim2.new(1,-12,0,hudTop(small))
+ -- round socket for the portrait, 7 px in from the card's edges
+ cardStyle.Layout(h,h+4) -- round socket 7 px in; the MASTERY tag sits in the top border over the text column
+ local x=h+4 -- text starts right after the socket
+ -- Three rows on the plank (name / bar / level + count), text kept clear of the plank's top and bottom edges.
+ local s=h/84;local right=math.floor(14*s)
+ hudName.Position=UDim2.fromOffset(x,math.floor(18*s));hudName.Size=UDim2.new(1,-x-right,0,math.floor(16*s));hudName.TextYAlignment=Enum.TextYAlignment.Center;UI.fit(hudName,10,small and 12 or 15)
+ hudBar.Position=UDim2.new(0,x,0,math.floor(38*s));hudBar.Size=UDim2.new(1,-x-right,0,math.max(10,math.floor(12*s)))
+ local rowY,rowH=math.floor(55*s),math.floor(13*s)
+ hudLevel.Position=UDim2.fromOffset(x,rowY);hudLevel.Size=UDim2.fromOffset(math.floor(56*s),rowH);hudLevel.TextSize=math.floor(11*s)
+ hudCount.Position=UDim2.fromOffset(x+math.floor(56*s),rowY);hudCount.Size=UDim2.new(1,-x-math.floor(56*s)-right,0,rowH);hudCount.TextSize=math.floor(11*s)
+ -- The daily double tag hangs under the plank, in words a player understands.
+ hudBoost.AnchorPoint=Vector2.new(1,0);hudBoost.Position=UDim2.new(1,-right,1,-2);hudBoost.Size=UDim2.new(1,-x-right+math.floor(30*s),0,math.floor(18*s));hudBoost.TextSize=math.floor(10*s)
+end
+local function pickFocus(s)
+ local list=type(s)=='table'and s.masteries or nil
+ if type(list)~='table'then return nil end
+ local byId={};for _,m in list do byId[m.id]=m end
+ if hudFocus and byId[hudFocus]then return byId[hudFocus]end
+ if type(s.masteryLast)=='table'and byId[s.masteryLast.id]and not byId[s.masteryLast.id].complete then return byId[s.masteryLast.id]end
+ local best,bestFrac=nil,-1
+ for _,m in list do
+  if not m.complete then
+   local f=((tonumber(m.count)or 0)-(tonumber(m.floor)or 0))/math.max(1,(tonumber(m.nextTarget)or 1)-(tonumber(m.floor)or 0))
+   if f>bestFrac then best,bestFrac=m,f end
+  end
+ end
+ return best or list[1]
+end
+local function hudDraw(animate)
+ local m=pickFocus(state)
+ if not m then hudGui.Enabled=false;return end
+ hudFocus=m.id
+ local tint=masteryColor(m)
+ if hudBadge then hudBadge:Destroy()end
+ hudBadge=Instance.new('Frame');hudBadge.Name='Portrait';hudBadge.BackgroundTransparency=1;hudBadge.Size=UDim2.fromScale(1,1);hudBadge.Parent=hudBadgeHolder
+ local disc=Instance.new('CanvasGroup');disc.Name='Disc';disc.BackgroundColor3=Color3.fromRGB(34,70,70);disc.Size=UDim2.fromScale(1,1);disc.Parent=hudBadge;UI.corner(disc,UDim.new(1,0))
+ if portrait then
+  local vp=portrait(disc,m.id,m.creatureKind);vp.Position=UDim2.fromScale(0,0);vp.Size=UDim2.fromScale(1,1);vp.Ambient=Color3.fromRGB(255,255,255)
+  UI.corner(vp,UDim.new(1,0)) -- the 3D portrait is cut by the round socket (owner 2026-10-25: the stand poked out the bottom)
+  -- Head-and-shoulders crop, centred in the round socket (the board's camera frames the whole body for a tall tile).
+  -- The collector portrait is a pile of loot, so it keeps the whole pile in view.
+  local mdl,cam=vp:FindFirstChildOfClass('Model'),vp.CurrentCamera
+  if mdl and cam then
+   local box,size=mdl:GetBoundingBox();local bust=m.kind=='monster'
+   local at=box.Position+Vector3.new(0,bust and size.Y*.22 or 0,0);local r=math.max(size.X,size.Y)*(bust and .3 or .5)
+   cam.CFrame=CFrame.lookAt(at+mdl:GetPivot().LookVector*(r/math.tan(math.rad(cam.FieldOfView/2))),at)
+  end
+ end
+ if m.complete then -- mastered: the crowned ring around the portrait
+  local crown=Instance.new('ImageLabel');crown.Name='MaxRing';crown.BackgroundTransparency=1;crown.Image='rbxassetid://115125938026119';crown.AnchorPoint=Vector2.new(.5,.5)
+  crown.Position=UDim2.fromScale(.5,.5);crown.Size=UDim2.fromScale(1.45,1.45);crown.ZIndex=3;crown.Parent=hudBadge
+ end
+ hudLevel.Text=m.complete and''or('LV '..(tonumber(m.level)or 0))
+ hudName.Text=string.upper(tostring(m.name));hudName.TextColor3=tint
+ local count,floorV,nextV=tonumber(m.count)or 0,tonumber(m.floor)or 0,math.max(1,tonumber(m.nextTarget)or 1)
+ local frac=m.complete and 1 or math.clamp((count-floorV)/math.max(1,nextV-floorV),0,1)
+ hudCount.Text=m.complete and'MASTERED'or(fmtNum(count)..' / '..fmtNum(nextV)..' '..string.upper(tostring(m.unit or'')))
+ cardStyle.SetAccent(m.complete and READY_GOLD or tint)
+ local boost=type(state.masteryBoost)=='table'and tonumber(state.masteryBoost.left)or 0
+ hudBoost.Text='';hudBoost.Visible=false -- the daily double tag is not shown on the card (user, 2026-10-22)
+ hudFill.Visible=frac>0
+ if animate then Tween:Create(hudFill,TweenInfo.new(.45,Enum.EasingStyle.Quad),{Size=UDim2.fromScale(frac,1)}):Play()else hudFill.Size=UDim2.fromScale(frac,1)end
+end
+-- Phones and tablets never get the mastery card or banner, even with a keyboard, mouse or controller attached:
+-- the device decides, not the last input. Consoles and PCs keep them; boards work on every device.
+local function masteryUiAllowed()
+ return not InputHints.IsMobile()
+end
+local HIDE_FOR={'QuestLogOpen','VanShopOpen','AppearanceOpen','VanRewardsOpen','MapOpen','AdminPowersPanelOpen','AdminPassPanelOpen','InLobbyCircle'}
+-- In a mission the card only appears for a few seconds when a mastery actually moves (user request 2026-10-22);
+-- the lobby keeps it on screen.
+local MISSION_SHOW_SECONDS=2.5
+local hudShowUntil=0
+local function hudVisible()
+ if not masteryUiAllowed()or UI.IsFocused()then return false end -- any NeonUI panel (van shops, rewards, gift revive...)
+ if p:GetAttribute('MissionActive')==true and os.clock()>hudShowUntil then return false end
+ for _,a in HIDE_FOR do if p:GetAttribute(a)then return false end end
+ return true
+end
+-- Mission pop-in (2026-10-22): the card bounces in from the right with a puff burst, a shockwave ring and sparkles around
+-- the portrait; every further point gives a smaller puff; when its seconds are up it slides back out instead of vanishing.
+local cardScale=Instance.new('UIScale');cardScale.Name='PopScale';cardScale.Parent=hud
+local cardOut=false
+local function puff(big)
+ if not hudGui.Enabled or hudBadgeHolder.AbsoluteSize.X<1 then return end
+ local base=hudBadgeHolder.AbsolutePosition+hudBadgeHolder.AbsoluteSize/2-hudGui.AbsolutePosition
+ local m=pickFocus(state);local tint=m and masteryColor(m)or READY_GOLD
+ local ring=Instance.new('Frame');ring.Name='PuffRing';ring.AnchorPoint=Vector2.new(.5,.5);ring.Position=UDim2.fromOffset(base.X,base.Y);ring.Size=UDim2.fromOffset(20,20);ring.BackgroundTransparency=1;ring.ZIndex=20;ring.Parent=hudGui
+ Instance.new('UICorner',ring).CornerRadius=UDim.new(1,0)
+ local rs=Instance.new('UIStroke');rs.Color=READY_GOLD;rs.Thickness=4;rs.Parent=ring
+ local reach=big and 150 or 105
+ Tween:Create(ring,TweenInfo.new(.5,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Size=UDim2.fromOffset(reach,reach)}):Play()
+ Tween:Create(rs,TweenInfo.new(.5,Enum.EasingStyle.Quad),{Transparency=1,Thickness=1}):Play()
+ task.delay(.55,function()ring:Destroy()end)
+ local n=big and 12 or 8
+ for i=1,n do
+  local a=(i/n)*math.pi*2+math.random()*.5
+  local dist=(big and 55 or 38)+math.random()*25
+  local s=10+math.random()*12
+  local f=Instance.new('Frame');f.Name='Puff';f.AnchorPoint=Vector2.new(.5,.5);f.Position=UDim2.fromOffset(base.X,base.Y);f.Size=UDim2.fromOffset(s*.4,s*.4)
+  f.BackgroundColor3=i%3==0 and Color3.new(1,1,1)or i%3==1 and tint or READY_GOLD;f.BackgroundTransparency=.05;f.BorderSizePixel=0;f.ZIndex=19;f.Parent=hudGui
+  Instance.new('UICorner',f).CornerRadius=UDim.new(1,0)
+  local to=base+Vector2.new(math.cos(a),math.sin(a))*dist
+  Tween:Create(f,TweenInfo.new(.55+math.random()*.2,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Position=UDim2.fromOffset(to.X,to.Y),Size=UDim2.fromOffset(s,s),BackgroundTransparency=1}):Play()
+  task.delay(.8,function()f:Destroy()end)
+ end
+ for i=1,big and 4 or 2 do
+  local st=Instance.new('TextLabel');st.Name='Sparkle';st.BackgroundTransparency=1;st.Text='✦';st.Font=Enum.Font.GothamBold;st.TextSize=20;st.TextColor3=Color3.fromRGB(255,245,200);st.AnchorPoint=Vector2.new(.5,.5)
+  st.Position=UDim2.fromOffset(base.X+math.random(-48,48),base.Y+math.random(-36,36));st.Rotation=math.random(0,90);st.ZIndex=21;st.Parent=hudGui
+  local sc=Instance.new('UIScale');sc.Scale=0;sc.Parent=st
+  Tween:Create(sc,TweenInfo.new(.25,Enum.EasingStyle.Back,Enum.EasingDirection.Out,0,true,i*.06),{Scale=1.4}):Play()
+  Tween:Create(st,TweenInfo.new(.55,Enum.EasingStyle.Linear,Enum.EasingDirection.Out,0,false,i*.06),{Rotation=st.Rotation+90}):Play()
+  task.delay(.85,function()st:Destroy()end)
+ end
+ sfx('giftSparkle',big and 1 or 1.15)
+end
+local function cardIntro()
+ cardOut=false
+ hud.AnchorPoint=Vector2.new(0,0);cardScale.Scale=.7
+ Tween:Create(hud,TweenInfo.new(.45,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{AnchorPoint=Vector2.new(1,0)}):Play()
+ Tween:Create(cardScale,TweenInfo.new(.5,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()
+ sfx('itemPop',1.15)
+ task.delay(.3,function()puff(true)end)
+end
+local function refreshHud()
+ local want=state~=nil and type(state.masteries)=='table'and hudVisible()
+ if not want and hudGui.Enabled and p:GetAttribute('MissionActive')==true and masteryUiAllowed()then
+  if cardOut then return end
+  cardOut=true
+  local t=Tween:Create(hud,TweenInfo.new(.3,Enum.EasingStyle.Back,Enum.EasingDirection.In),{AnchorPoint=Vector2.new(0,0)});t:Play()
+  t.Completed:Once(function()if cardOut then hudGui.Enabled=false;hud.AnchorPoint=Vector2.new(1,0);cardOut=false end end)
+  return
+ end
+ if want and cardOut then cardOut=false;hud.AnchorPoint=Vector2.new(1,0)end
+ hudGui.Enabled=want
+ if hudGui.Enabled then hudLayout();hudDraw(false)end
+end
+for _,attr in HIDE_FOR do p:GetAttributeChangedSignal(attr):Connect(refreshHud)end
+p:GetAttributeChangedSignal('MissionActive'):Connect(refreshHud)
+local function popPoints(n)
+ local t=UI.text(hud,'Pop','+'..n,UI.Font.Display,20,READY_GOLD);UI.outline(t,2)
+ t.AnchorPoint=Vector2.new(1,.5);t.Position=UDim2.new(1,-8,0,hudBar.Position.Y.Offset);t.Size=UDim2.fromOffset(60,24);t.TextXAlignment=Enum.TextXAlignment.Right;t.ZIndex=5
+ Tween:Create(t,TweenInfo.new(1,Enum.EasingStyle.Quad),{Position=UDim2.new(1,-8,0,hudBar.Position.Y.Offset-30),TextTransparency=1}):Play()
+ task.delay(1.05,function()t:Destroy()end)
+ local s=Instance.new('UIScale');s.Scale=1.08;s.Parent=hud;Tween:Create(s,TweenInfo.new(.3,Enum.EasingStyle.Back),{Scale=1}):Play();task.delay(.35,function()s:Destroy()end)
+end
+-- Level-up banner: top centre, below the goal toast, queued.
+local bannerQueue,bannerShowing={},false
+local function nextBanner()
+ if bannerShowing or #bannerQueue==0 then return end
+ if not masteryUiAllowed()then table.clear(bannerQueue);return end
+ bannerShowing=true
+ local info=table.remove(bannerQueue,1)
+ local holderB,plateB=UI.plate(toastGui,'MasteryBanner',18)
+ holderB.AnchorPoint=Vector2.new(.5,0);holderB.Size=UDim2.fromOffset(compact and 320 or 420,compact and 76 or 88);holderB.Position=UDim2.new(.5,0,0,-100)
+ local col=bandOf(info.level)
+ local badge=levelBadge(plateB,info.level,compact and 56 or 66,info.complete);badge.Position=UDim2.fromOffset(10,(compact and 10 or 11))
+ local x=(compact and 56 or 66)+20
+ local head=UI.text(plateB,'Head',info.complete and(string.upper(info.name)..' MASTERED!')or(string.upper(info.name)..'  ·  LEVEL '..info.level),UI.Font.Display,compact and 17 or 21,col)
+ UI.outline(head,2);head.Position=UDim2.fromOffset(x,compact and 8 or 10);head.Size=UDim2.new(1,-x-10,0,compact and 24 or 28);UI.fit(head,11,compact and 17 or 21)
+ local words={}
+ if info.tokens>0 then table.insert(words,'+'..info.tokens..' TOKENS')end
+ if info.revives>0 then table.insert(words,'+'..info.revives..' REVIVE')end
+ if info.title then table.insert(words,'MONSTER MASTER TITLE')end
+ local body=UI.text(plateB,'Body',table.concat(words,'   '),UI.Font.Display,compact and 15 or 18,READY_GOLD);UI.outline(body,1.5)
+ body.Position=UDim2.fromOffset(x,compact and 36 or 42);body.Size=UDim2.new(1,-x-10,0,compact and 22 or 26);UI.fit(body,10,compact and 15 or 18)
+ sfx('coins');if info.complete then task.delay(.15,function()sfx('rare')end)end
+ Tween:Create(holderB,TweenInfo.new(.4,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(.5,0,0,compact and 84 or 92)}):Play()
+ task.delay(info.complete and 4 or 3,function()
+  local t=Tween:Create(holderB,TweenInfo.new(.25,Enum.EasingStyle.Quad,Enum.EasingDirection.In),{Position=UDim2.new(.5,0,0,-100)});t:Play()
+  t.Completed:Wait();holderB:Destroy();bannerShowing=false;nextBanner()
+ end)
+end
+onMastery=function(old,new)
+ if type(new)~='table'or type(new.masteries)~='table'then refreshHud();return end
+ local before={};if type(old)=='table'and type(old.masteries)=='table'then for _,m in old.masteries do before[m.id]=m end end
+ local moved,gained=nil,0
+ for _,m in new.masteries do
+  local was=before[m.id]
+  if was then
+   local d=(tonumber(m.count)or 0)-(tonumber(was.count)or 0)
+   if d>0 then moved=m;gained=d end
+   for l=(tonumber(was.level)or 0)+1,(tonumber(m.level)or 0)do
+    local complete=l>=(tonumber(m.maxLevel)or 10)
+    local tokens=tonumber(m.levelReward and m.levelReward.tokens)or 0
+    local revives=complete and(tonumber(m.completeReward and m.completeReward.revives)or 0)or 0
+    if #bannerQueue<6 then table.insert(bannerQueue,{name=tostring(m.name),level=l,complete=complete,tokens=tokens,revives=revives})end
+   end
+  end
+ end
+ local grandNow=type(new.grandMastery)=='table'and new.grandMastery.claimed
+ local grandWas=type(old)=='table'and type(old.grandMastery)=='table'and old.grandMastery.claimed
+ if grandNow and not grandWas and type(old)=='table'then table.insert(bannerQueue,{name='Monster Master',level=10,complete=true,tokens=0,revives=0,title=true})end
+ if moved then hudFocus=moved.id;hudShowUntil=os.clock()+MISSION_SHOW_SECONDS end
+ local wasShown=hudGui.Enabled and not cardOut
+ refreshHud()
+ if drawBoards then drawBoards()end
+ if moved and hudGui.Enabled then
+  popPoints(gained);hudDraw(true)
+  if not wasShown and p:GetAttribute('MissionActive')==true then cardIntro()else puff(false)end
+ end
+ nextBanner()
+end
+gui:GetPropertyChangedSignal('AbsoluteSize'):Connect(function()if hudGui.Enabled then hudLayout()end end)
+
+-- Mastery boards: the lobby's MasteryBoard (beside the leaderboard) and the van's VanMasteryBoard. Every player sees
+-- their own six masteries: the monster itself (ReplicatedStorage.MasteryPortraits), level, ten level pips, the bar to
+-- the next level, the next reward, today's 2x boost and the road to the Monster Master title.
+local Portraits=RS:WaitForChild('MasteryPortraits',10)
+local boards={} -- face part -> {gui, tiles, header refs}
+local BOARD_FONT=Enum.Font.FredokaOne
+local INK=Color3.fromRGB(5,5,8)
+local function bText(parent,name,text,x,y,w,h,color,max,align)
+ local t=Instance.new('TextLabel');t.Name=name;t.Text=text;t.BackgroundTransparency=1;t.Font=BOARD_FONT;t.TextScaled=true;t.TextColor3=color or colors.text
+ t.TextXAlignment=align or Enum.TextXAlignment.Left;t.Position=UDim2.fromScale(x,y);t.Size=UDim2.fromScale(w,h);t.Parent=parent
+ local k=Instance.new('UITextSizeConstraint');k.MaxTextSize=max or 200;k.Parent=t
+ local o=Instance.new('UIStroke');o.Color=INK;o.Thickness=3;o.ApplyStrokeMode=Enum.ApplyStrokeMode.Contextual;o.Parent=t
+ return t
+end
+local function bFrame(parent,name,x,y,w,h,color,radius)
+ local f=Instance.new('Frame');f.Name=name;f.BackgroundColor3=color;f.BorderSizePixel=0;f.Position=UDim2.fromScale(x,y);f.Size=UDim2.fromScale(w,h);f.Parent=parent
+ if radius then local c=Instance.new('UICorner');c.CornerRadius=radius;c.Parent=f end
+ return f
+end
+function portrait(parent,id,kind) -- assigns the local declared above the mastery card
+ local vp=Instance.new('ViewportFrame');vp.Name='Portrait';vp.BackgroundTransparency=1;vp.Position=UDim2.fromScale(.02,.06);vp.Size=UDim2.fromScale(.36,.88)
+ vp.Ambient=Color3.fromRGB(225,225,235);vp.LightColor=Color3.fromRGB(255,245,230);vp.LightDirection=Vector3.new(-.4,-1,-.8);vp.Parent=parent
+ local src=Portraits and Portraits:FindFirstChild(kind or(id=='m_collector'and'Collector')or'')
+ if not src then return vp end
+ local m=src:Clone();m:PivotTo(CFrame.new());m.Parent=vp
+ local box,size=m:GetBoundingBox()
+ local cam=Instance.new('Camera');cam.FieldOfView=28;cam.Parent=vp;vp.CurrentCamera=cam
+ local front=m:GetPivot().LookVector
+ local dist=math.max(size.Y,size.X*1.1,size.Z)/2/math.tan(math.rad(14))*1.08
+ local at=box.Position
+ cam.CFrame=CFrame.lookAt(at+front*dist+Vector3.new(0,size.Y*.08,0),at)
+ return vp
+end
+local function buildBoard(face)
+ local gui=Instance.new('SurfaceGui');gui.Name='MasteryBoardUI';gui.Adornee=face;gui.Face=Enum.NormalId.Front;gui.SizingMode=Enum.SurfaceGuiSizingMode.FixedSize
+ gui.CanvasSize=Vector2.new(1600,math.floor(1600*face.Size.Y/math.max(.1,face.Size.X)));gui.LightInfluence=0;gui.Brightness=1.4;gui.ResetOnSpawn=false
+ gui.ZOffset=1;gui.Parent=pg
+ local bg=bFrame(gui,'Back',0,0,1,1,Color3.new(1,1,1),UDim.new(0,40))
+ local fill=Instance.new('UIGradient');fill.Rotation=90;fill.Color=ColorSequence.new(Color3.fromRGB(38,26,58),Color3.fromRGB(10,9,16));fill.Parent=bg
+ local rim=Instance.new('UIStroke');rim.Thickness=12;rim.Color=Color3.new(1,1,1);rim.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;rim.Parent=bg
+ local rg=Instance.new('UIGradient');rg.Color=ColorSequence.new(READY_GOLD,PURPLE);rg.Rotation=30;rg.Parent=rim
+ local ui={gui=gui,tiles={}}
+ local title=bText(bg,'Title','MASTERIES',.035,.025,.5,.115,Color3.new(1,1,1),180)
+ local tg=Instance.new('UIGradient');tg.Rotation=90;tg.Color=ColorSequence.new(Color3.fromRGB(255,236,150),Color3.fromRGB(255,150,40));tg.Parent=title
+ bText(bg,'Sub','ESCAPE MONSTERS  ·  COLLECT LOOT  ·  EVERY LEVEL PAYS 25 TOKENS',.037,.142,.6,.045,colors.muted,60)
+ bText(bg,'TotalLabel','YOUR TOTAL LEVEL',.6,.03,.365,.04,colors.muted,50,Enum.TextXAlignment.Right)
+ ui.total=bText(bg,'Total','0 / 60',.6,.068,.365,.085,colors.text,140,Enum.TextXAlignment.Right)
+ ui.boost=bFrame(bg,'Boost',.62,.158,.345,.048,DONE_GREEN,UDim.new(1,0))
+ ui.boostText=bText(ui.boost,'Text','',.04,.08,.92,.84,INK,48,Enum.TextXAlignment.Center);ui.boostText:FindFirstChildOfClass('UIStroke').Enabled=false
+ local list=type(state)=='table'and state.masteries or {}
+ for i,m in list do
+  if i>6 then break end
+  local col,row=(i-1)%3,math.floor((i-1)/3)
+  local tile=bFrame(bg,'Tile'..i,.03+col*.317,.225+row*.322,.302,.3,Color3.new(1,1,1),UDim.new(0,28))
+  local tint=masteryColor(m)
+  local tf=Instance.new('UIGradient');tf.Rotation=90;tf.Color=ColorSequence.new(tint:Lerp(Color3.fromRGB(20,18,30),.78),Color3.fromRGB(12,11,18));tf.Parent=tile
+  local stroke=Instance.new('UIStroke');stroke.Thickness=6;stroke.Color=tint;stroke.Transparency=.25;stroke.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;stroke.Parent=tile
+  local halo=bFrame(tile,'Halo',.04,.12,.32,.76,tint,UDim.new(1,0));halo.BackgroundTransparency=.7
+  portrait(tile,m.id,m.creatureKind)
+  local ring=bFrame(tile,'Level',.025,.6,.15,.36,Color3.fromRGB(14,12,20),UDim.new(1,0));ring.SizeConstraint=Enum.SizeConstraint.RelativeYY;ring.Size=UDim2.fromScale(.36,.36)
+  local rs=Instance.new('UIStroke');rs.Thickness=5;rs.Color=colors.cardLow;rs.Parent=ring
+  local lv=bText(ring,'Lv','LV',.1,.1,.8,.26,colors.muted,40,Enum.TextXAlignment.Center)
+  local n=bText(ring,'N','0',.1,.32,.8,.56,colors.text,90,Enum.TextXAlignment.Center)
+  bText(tile,'Name',string.upper(tostring(m.name)),.4,.07,.57,.17,tint,90)
+  local pips=Instance.new('Frame');pips.Name='Pips';pips.BackgroundTransparency=1;pips.Position=UDim2.fromScale(.4,.29);pips.Size=UDim2.fromScale(.57,.1);pips.Parent=tile
+  local pl=Instance.new('UIListLayout');pl.FillDirection=Enum.FillDirection.Horizontal;pl.Padding=UDim.new(.012,0);pl.Parent=pips
+  local pipList={}
+  for l=1,math.max(1,tonumber(m.maxLevel)or 10)do
+   local pip=Instance.new('Frame');pip.Size=UDim2.fromScale(.088,1);pip.BackgroundColor3=colors.cardLow;pip.BorderSizePixel=0;pip.Parent=pips
+   local pc=Instance.new('UICorner');pc.CornerRadius=UDim.new(.3,0);pc.Parent=pip;pipList[l]=pip
+  end
+  local bar=bFrame(tile,'Bar',.4,.45,.57,.12,Color3.fromRGB(8,8,12),UDim.new(1,0))
+  local barFill=bFrame(bar,'Fill',0,0,0,1,Color3.new(1,1,1),UDim.new(1,0))
+  local bfg=Instance.new('UIGradient');bfg.Color=ColorSequence.new(tint,READY_GOLD);bfg.Parent=barFill
+  local count=bText(tile,'Count','',.4,.6,.57,.15,colors.text,80)
+  local nextR=bText(tile,'Next','',.4,.78,.57,.13,READY_GOLD,60)
+  ui.tiles[m.id]={tile=tile,stroke=stroke,ring=rs,n=n,lv=lv,pips=pipList,fill=barFill,count=count,nextR=nextR,tint=tint}
+ end
+ local foot=bFrame(bg,'Footer',.03,.885,.94,.085,Color3.fromRGB(20,16,30),UDim.new(0,24))
+ local fs=Instance.new('UIStroke');fs.Thickness=5;fs.Color=READY_GOLD;fs.Transparency=.35;fs.Parent=foot
+ ui.grandText=bText(foot,'Grand','MONSTER MASTER TITLE',.025,.15,.45,.7,READY_GOLD,70)
+ local stars=Instance.new('Frame');stars.Name='Stars';stars.BackgroundTransparency=1;stars.Position=UDim2.fromScale(.48,.18);stars.Size=UDim2.fromScale(.28,.64);stars.Parent=foot
+ local sl=Instance.new('UIListLayout');sl.FillDirection=Enum.FillDirection.Horizontal;sl.Padding=UDim.new(.02,0);sl.HorizontalAlignment=Enum.HorizontalAlignment.Center;sl.Parent=stars
+ ui.stars={}
+ for s=1,6 do local st=bText(stars,'Star'..s,'★',0,0,.14,1,colors.cardLow,80,Enum.TextXAlignment.Center);ui.stars[s]=st end
+ ui.grandCount=bText(foot,'Count','0 / 6 MASTERED',.77,.15,.205,.7,colors.text,60,Enum.TextXAlignment.Right)
+ return ui
+end
+local function drawBoard(ui)
+ if type(state)~='table'or type(state.masteries)~='table'then return end
+ local total,maxTotal=0,0
+ for _,m in state.masteries do
+  local level,maxLevel=math.floor(tonumber(m.level)or 0),math.max(1,math.floor(tonumber(m.maxLevel)or 10))
+  total+=level;maxTotal+=maxLevel
+  local t=ui.tiles[m.id]
+  if t then
+   local band=level>0 and(bandOf(level))or colors.cardLow
+   t.ring.Color=m.complete and READY_GOLD or band
+   t.n.Text=m.complete and'MAX'or tostring(level);t.n.TextColor3=level>0 and band or colors.muted
+   for l,pip in t.pips do pip.BackgroundColor3=l<=level and(bandOf(l))or colors.cardLow end
+   local count,floorV,nextV=tonumber(m.count)or 0,tonumber(m.floor)or 0,math.max(1,tonumber(m.nextTarget)or 1)
+   local frac=m.complete and 1 or math.clamp((count-floorV)/math.max(1,nextV-floorV),0,1)
+   t.fill.Size=UDim2.fromScale(frac,1);t.fill.Visible=frac>0
+   local unit=string.upper(tostring(m.unit or''))
+   t.count.Text=m.complete and(fmtNum(count)..' '..unit)or(fmtNum(count)..' / '..fmtNum(nextV)..' '..unit)
+   if m.complete then
+    t.nextR.Text='★ MASTERED ★';t.stroke.Color=READY_GOLD;t.stroke.Transparency=0;t.stroke.Thickness=9
+   else
+    local tokens=tonumber(m.levelReward and m.levelReward.tokens)or 25
+    local revive=level+1>=maxLevel and(tonumber(m.completeReward and m.completeReward.revives)or 0)or 0
+    t.nextR.Text='LEVEL '..(level+1)..':  +'..tokens..' TOKENS'..(revive>0 and('  +'..revive..' REVIVE')or'')
+    t.stroke.Color=t.tint;t.stroke.Transparency=hudFocus==m.id and 0 or .25;t.stroke.Thickness=hudFocus==m.id and 8 or 6
+   end
+  end
+ end
+ ui.total.Text=total..' / '..maxTotal
+ local boost=type(state.masteryBoost)=='table'and state.masteryBoost or{}
+ local left=tonumber(boost.left)or 0
+ ui.boost.BackgroundColor3=left>0 and DONE_GREEN or colors.cardLow
+ ui.boostText.TextColor3=left>0 and INK or colors.muted
+ ui.boostText.Text=left>0 and('2X BOOST  ·  '..left..' OF '..tostring(boost.limit or 5)..' LEFT TODAY')or('2X BOOST BACK IN '..(boost.resetAt and fmtTime(boost.resetAt-serverNow())or'A DAY'))
+ local grand=type(state.grandMastery)=='table'and state.grandMastery or{}
+ local done,target=math.floor(tonumber(grand.done)or 0),math.max(1,math.floor(tonumber(grand.target)or 6))
+ for s,st in ui.stars do st.TextColor3=s<=done and READY_GOLD or colors.cardLow;st.Visible=s<=target end
+ ui.grandText.Text=grand.claimed and'MONSTER MASTER  ·  TITLE UNLOCKED!'or'MONSTER MASTER TITLE'
+ ui.grandCount.Text=done..' / '..target..' MASTERED'
+end
+local function boardFaces()
+ local out={}
+ local lobby=workspace:FindFirstChild('LobbyWorld');local lb=lobby and lobby:FindFirstChild('MasteryBoard')
+ local lf=lb and lb:FindFirstChild('MasteryFace',true);if lf then table.insert(out,lf)end
+ local camp=workspace:FindFirstChild('RecoveryCamp');local vf=camp and camp:FindFirstChild('VanMasteryBoard',true)
+ if vf then table.insert(out,vf)end
+ return out
+end
+drawBoards=function()
+ if type(state)~='table'or type(state.masteries)~='table'then return end
+ local live={}
+ for _,face in boardFaces()do
+  live[face]=true
+  local ui=boards[face]
+  if not ui or not ui.gui.Parent then ui=buildBoard(face);boards[face]=ui end
+  drawBoard(ui)
+ end
+ for face,ui in boards do if not live[face]then ui.gui:Destroy();boards[face]=nil end end
+end
+task.spawn(function()while true do task.wait(2);drawBoards()end end) -- the van board appears with each mission's camp
+-- Once a second: the quota strip appears and resizes after joining, and the input device or a panel can change.
+task.spawn(function()while true do task.wait(1)
+ local want=state~=nil and type(state.masteries)=='table'and hudVisible()
+ if want~=hudGui.Enabled then refreshHud()elseif want then hudLayout()end
+end end)
 
 -- Van terminal face (RecoveryModels builds QuestsRewardsTerminal; edits here are local, so every player sees
 -- their own progress on the same panel) ------------------------------------------------------------------

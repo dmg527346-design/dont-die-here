@@ -177,7 +177,8 @@ function M.popRows(cells,columns,startDelay,stagger,duration,elapsed)
 end
 -- Modal focus ------------------------------------------------------------------------------
 -- Screens that must stay visible over any panel (round results, jumpscares, loading, rewards).
-M.KeepVisible={MonsterJumpscare=true,MonsterWinCutscene=true,RoundRecap=true,BadgeEarnedToast=true,RunTokenReward=true,MansionLoading=true,Freecam=true,TouchGui=true}
+M.KeepVisible={MonsterJumpscare=true,MonsterWinCutscene=true,RoundRecap=true,BadgeEarnedToast=true,RunTokenReward=true,MansionLoading=true,Freecam=true,TouchGui=true,
+ ShopTutorial=true} -- the shop chapter points at the panel's own buttons (TutorialClient.ShopTutorial)
 local owners={};local hidden={};local promptsWere
 function M.FocusAcquire(owner,ownGui)
  local first=next(owners)==nil

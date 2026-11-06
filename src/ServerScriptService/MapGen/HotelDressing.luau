@@ -1,6 +1,6 @@
 -- Hotel map finish: a faded, haunted 1920s grand hotel. Carpet/damask/walnut textures, chandeliers and brass dome
--- lights (some dead, some flickering), brass room plaques and EXIT signs, scrawled (no blood or handprints),
--- messages, scattered letters, playing cards, water bottles and fallen plaster.
+-- lights (some dead, some flickering), brass room plaques and EXIT signs, scrawled charcoal
+-- messages, scattered letters, postcards, water bottles and fallen plaster.
 -- Cosmetic only: every added part is non-colliding, non-queryable and tagged NonBlockingDetail.
 local M = {}
 local TEX = {
@@ -8,12 +8,11 @@ local TEX = {
 	wall = "rbxassetid://113772508691571", -- burgundy damask
 	ceiling = "rbxassetid://109990955161557", -- cracked cream plaster
 	tile = "rbxassetid://122612592804739", -- walnut wainscot panels
-	blood = "rbxassetid://72390053907846", -- black grime / handprints
 }
 local LIGHT = Color3.fromRGB(255, 196, 136) -- warm old incandescent
 local DEAD = Color3.fromRGB(84, 70, 58)
 local BRASS = Color3.fromRGB(176, 136, 64)
-local BLOOD = Color3.fromRGB(14, 12, 12) -- old grime: near black
+local INK = Color3.fromRGB(28, 28, 30) -- charcoal scrawl ink
 local FLOOR_H = 16
 
 local function part(parent, name, size, cf, color, material)
@@ -312,8 +311,8 @@ end
 
 local SCRAWL = { "CHECK OUT", "THEY NEVER LEFT", "DO NOT DISTURB", "STAY FOREVER", "ROOM 237", "THE BELLHOP IS WATCHING", "NO VACANCY" }
 
--- Blood on walls and floors, plus the odd message scrawled in blood.
-function M.Blood(mansion, plan, folder)
+-- The odd charcoal message scrawled on a wall (no blood, smears, pools or trails: content rules, 2026-10-27).
+function M.Scrawl(mansion, plan, folder)
 	local rng = Random.new((plan.seed or 1) + 666)
 	local n = 0
 	for _, r in ipairs(plan.rooms or {}) do
@@ -321,7 +320,7 @@ function M.Blood(mansion, plan, folder)
 		if r.type ~= "Stair" and r.name ~= plan.start then
 			local y = (r.level or 0) * FLOOR_H
 			local w, d = r.x2 - r.x1, r.z2 - r.z1
-			-- one wall smear/handprint in about half the rooms (on the inner face of a random wall, away from corners)
+			-- a scrawl spot in about half the rooms (on the inner face of a random wall, away from corners)
 			if rng:NextNumber() < 0.55 then repeat
 				local side = rng:NextInteger(1, 4)
 				local along0 = rng:NextNumber(0.25, 0.75)
@@ -340,7 +339,6 @@ function M.Blood(mansion, plan, folder)
 				if s < 2.5 then break end
 				local wantScrawl = rng:NextNumber() < 0.3
 				if not wallClear(mansion, cf, s, s) then break end
-				-- No blood smears or handprints (content maturity, 2026-10-07): only the scrawled message remains.
 				local mw = math.min(9, 2 * math.min(alongC * wallLen, (1 - alongC) * wallLen) - 2)
 				if wantScrawl and mw >= 3 and wallClear(mansion, cf * CFrame.new(0, s / 2 + 1.3, 0), mw, 2.2) then
 					local msg = part(folder, "Scrawl", Vector3.new(mw, 2.2, 0.05), cf * CFrame.new(0, s / 2 + 1.3, 0.02), Color3.new(1, 1, 1))
@@ -348,36 +346,10 @@ function M.Blood(mansion, plan, folder)
 					local gui = Instance.new("SurfaceGui"); gui.Face = Enum.NormalId.Back; gui.CanvasSize = Vector2.new(700, 170); gui.LightInfluence = 1; gui.Parent = msg
 					local label = Instance.new("TextLabel"); label.Size = UDim2.fromScale(1, 1); label.BackgroundTransparency = 1
 					label.Text = SCRAWL[rng:NextInteger(1, #SCRAWL)]; label.Font = Enum.Font.Creepster; label.TextScaled = true
-					label.TextColor3 = BLOOD; label.TextTransparency = 0.1; label.Rotation = rng:NextNumber(-6, 6); label.Parent = gui
+					label.TextColor3 = INK; label.TextTransparency = 0.1; label.Rotation = rng:NextNumber(-6, 6); label.Parent = gui
 					n += 1
 				end
 			until true end
-			-- floor pools and drag trails
-			local pools = 0 -- no blood pools or drag trails (content maturity, 2026-10-07)) + (rng:NextNumber() < 0.45 and 1 or 0)) or 0
-			for _ = 1, pools do
-				local x, z, found
-				local s = rng:NextNumber(2, 4)
-				for _ = 1, 5 do
-					x, z = rng:NextNumber(r.x1 + 3, r.x2 - 3), rng:NextNumber(r.z1 + 3, r.z2 - 3)
-					if floorClear(mansion, Vector3.new(x, y, z), Vector3.new(s, 0.6, s)) then found = true; break end
-				end
-				if not found then continue end
-				local pool = part(folder, "BloodPool", Vector3.new(0.04, s, s * rng:NextNumber(0.6, 1)), CFrame.new(x, y + 0.03, z) * CFrame.Angles(0, rng:NextNumber(0, 6.28), math.pi / 2), BLOOD, Enum.Material.Glass)
-				pool.Shape = Enum.PartType.Cylinder; pool.Transparency = 0.2; pool.Reflectance = 0.25
-				if rng:NextNumber() < 0.5 then -- a drag trail leading away
-					local a = rng:NextNumber(0, math.pi * 2)
-					local len = rng:NextNumber(6, 12)
-					local ex2 = math.clamp(x + math.cos(a) * len, r.x1 + 1, r.x2 - 1)
-					local ez2 = math.clamp(z + math.sin(a) * len, r.z1 + 1, r.z2 - 1)
-					len = math.max(1, math.sqrt((ex2 - x) ^ 2 + (ez2 - z) ^ 2)); a = math.atan2(ez2 - z, ex2 - x)
-					local mid = Vector3.new((x + ex2) / 2, y + 0.022, (z + ez2) / 2)
-					if floorClear(mansion, mid, Vector3.new(len, 0.6, 1)) then
-					local trail = part(folder, "BloodTrail", Vector3.new(len, 0.03, rng:NextNumber(0.5, 0.9)), CFrame.new(mid) * CFrame.Angles(0, -a, 0), BLOOD, Enum.Material.Glass)
-					trail.Transparency = 0.35; trail.Reflectance = 0.2
-					end
-				end
-				n += 1
-			end
 		end
 	end
 	return n
@@ -404,7 +376,7 @@ function M.Debris(mansion, plan, folder)
 				if roll < 0.6 then
 					part(folder, "Letter", Vector3.new(rng:NextNumber(0.6, 0.9), 0.03, rng:NextNumber(0.8, 1.1)), CFrame.new(x, y + 0.045, z) * CFrame.Angles(0, rng:NextNumber(0, 6.28), 0), rng:NextNumber() < 0.75 and Color3.fromRGB(220, 214, 196) or Color3.fromRGB(196, 176, 140))
 				elseif roll < 0.8 then
-					for c = 1, 3 do part(folder, "PlayingCard", Vector3.new(0.45, 0.02, 0.65), CFrame.new(x + rng:NextNumber(-0.6, 0.6), y + 0.07 + c * 0.012, z + rng:NextNumber(-0.6, 0.6)) * CFrame.Angles(0, rng:NextNumber(0, 6.28), 0), rng:NextNumber() < 0.5 and Color3.fromRGB(236, 230, 214) or Color3.fromRGB(160, 30, 34)) end
+					for c = 1, 3 do part(folder, "Postcard", Vector3.new(0.45, 0.02, 0.65), CFrame.new(x + rng:NextNumber(-0.6, 0.6), y + 0.07 + c * 0.012, z + rng:NextNumber(-0.6, 0.6)) * CFrame.Angles(0, rng:NextNumber(0, 6.28), 0), rng:NextNumber() < 0.5 and Color3.fromRGB(236, 230, 214) or Color3.fromRGB(150, 176, 196)) end
 				else
 					-- A clear plastic water bottle (no alcohol anywhere in the game: content maturity, 2026-10-07).
 					local b = part(folder, "WaterBottle", Vector3.new(1.0, 0.32, 0.32), CFrame.new(x, y + 0.16, z) * CFrame.Angles(0, rng:NextNumber(0, 6.28), 0), Color3.fromRGB(150, 205, 240), Enum.Material.Glass)
@@ -435,8 +407,8 @@ function M.Apply(mansion, plan, kit)
 	stats.textured = M.Surfaces(mansion)
 	local ok, v = pcall(M.Signs, mansion, plan, folder); stats.signs = ok and v or -1
 	if not ok then warn("[HotelDressing] signs: " .. tostring(v)) end
-	ok, v = pcall(M.Blood, mansion, plan, folder); stats.blood = ok and v or -1
-	if not ok then warn("[HotelDressing] blood: " .. tostring(v)) end
+	ok, v = pcall(M.Scrawl, mansion, plan, folder); stats.scrawl = ok and v or -1
+	if not ok then warn("[HotelDressing] scrawl: " .. tostring(v)) end
 	ok, v = pcall(M.Debris, mansion, plan, folder); stats.debris = ok and v or -1
 	if not ok then warn("[HotelDressing] debris: " .. tostring(v)) end
 	for k, val in pairs(stats) do mansion:SetAttribute("Hotel_" .. k, val) end

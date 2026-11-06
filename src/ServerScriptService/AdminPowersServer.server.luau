@@ -12,7 +12,10 @@ local JUMP_MIN,JUMP_MAX=0,250
 local DEFAULT_JUMP=game.StarterPlayer.CharacterJumpHeight
 local event=RS:FindFirstChild('AdminPowersEvent') or Instance.new('RemoteEvent');event.Name='AdminPowersEvent';event.Parent=RS
 -- Owner-only settings that must survive the lobby -> mission teleport (separate from player progress saves).
-local settingsStore=game:GetService('DataStoreService'):GetDataStore('DDH_AdminSettings_v1'..(game:GetService('RunService'):IsStudio() and '_Studio' or ''))
+local LOCAL_REVIEW=game:GetService('RunService'):IsStudio()and game.PlaceId==0 and game.GameId==0
+local STUDIO_MEMORY=LOCAL_REVIEW or game:GetService('RunService'):IsStudio()and workspace:GetAttribute('StudioDataStores')~=true -- Studio playtests keep saves in memory: stopping during a DataStore call hangs Studio. Workspace StudioDataStores=true tests real saves
+local settingsStore
+if not STUDIO_MEMORY then settingsStore=game:GetService('DataStoreService'):GetDataStore('DDH_AdminSettings_v1'..(game:GetService('RunService'):IsStudio() and '_Studio' or ''))end
 local SETTINGS_KEY='owner_'..OWNER_USER_ID
 local lastRequest={}
 
@@ -35,6 +38,34 @@ local function markQuestAid(p,action,value)
  if aided then QuestService.MarkAssisted()end
 end
 local godConnections={}
+-- Owner test map rotation: each level after the first walks every size of one map type (smallest first), then the
+-- next type in MapGen.Profiles.Kinds order. Only while the owner is in the mission; position is saved per owner.
+local MapProfiles=require(script.Parent:WaitForChild('MapGen'):WaitForChild('Profiles'))
+local rotationState -- {kind=string, seen={size,...}}
+local rotation=Instance.new('BindableFunction');rotation.Name='TestMapRotation';rotation.Parent=SS
+rotation.OnInvoke=function(currentKind,currentSize)
+ if STUDIO_MEMORY then return nil end
+ local owner=Players:GetPlayerByUserId(OWNER_USER_ID)
+ -- Off unless switched on for testing (owner attribute AdminMapRotation=true), so live runs keep the normal map order.
+ if not owner or owner:GetAttribute('MissionActive')~=true or owner:GetAttribute('AdminMapRotation')~=true then return nil end
+ local kinds=MapProfiles.Kinds
+ local function sizesOf(k)return MapProfiles.KindSizes[k]or MapProfiles.Sizes end
+ local st=rotationState
+ if type(st)~='table'or not table.find(kinds,st.kind)then st={kind=table.find(kinds,currentKind)and currentKind or kinds[1],seen={}} end
+ st.seen=type(st.seen)=='table'and st.seen or{}
+ if st.kind==currentKind and type(currentSize)=='string'and not table.find(st.seen,currentSize)then table.insert(st.seen,currentSize)end
+ local size
+ for _,s in ipairs(sizesOf(st.kind))do if not table.find(st.seen,s)then size=s;break end end
+ if not size then
+  local i=table.find(kinds,st.kind)or 0
+  st={kind=kinds[i%#kinds+1],seen={}};size=sizesOf(st.kind)[1]
+ end
+ table.insert(st.seen,size);rotationState=st
+ local snapshot={kind=st.kind,seen=table.clone(st.seen)}
+ task.spawn(function()pcall(function()settingsStore:UpdateAsync(SETTINGS_KEY,function(old)old=type(old)=='table'and old or{};old.rotation=snapshot;return old end)end)end)
+ owner:SetAttribute('TestMapNext',st.kind..' '..size)
+ return st.kind,size
+end
 
 local function isOwner(p)return Access.IsOwner(p)end
 local function character(p) local c=p.Character;return c,c and c:FindFirstChildOfClass('Humanoid'),c and c:FindFirstChild('HumanoidRootPart') end
@@ -118,6 +149,8 @@ end
 function handlers.adminGrant(p,userId,on)return Access.Set(p,userId,on)end
 function handlers.god(p,on)
  p:SetAttribute('AdminGod',on==true or nil);applyGod(p)
+ -- Remembered for the owner across teleports and sessions (god mode starts ON until switched off here).
+ if isOwner(p)then task.spawn(function()pcall(function()settingsStore:UpdateAsync(SETTINGS_KEY,function(old)old=type(old)=='table'and old or{};old.god=on==true;return old end)end)end)end
  return true,on and 'God mode ON: monsters ignore you and you cannot die.' or 'God mode OFF.'
 end
 function handlers.heal(p)
@@ -219,6 +252,12 @@ local function onPlayer(p)
  if isOwner(p)then task.spawn(function()
   local ok,saved=pcall(function() return settingsStore:GetAsync(SETTINGS_KEY) end)
   if ok and type(saved)=='table' and saved.simulateNoPasses==true and p.Parent then p:SetAttribute('AdminSimulateNoPasses',true) end
+  -- Owner testing: god mode starts OFF (switch it on in POWERS; that choice is remembered); the map rotation
+  -- resumes where it stopped when it is switched on (owner attribute AdminMapRotation=true).
+  if ok and p.Parent then
+   if type(saved)=='table'and saved.god==true then p:SetAttribute('AdminGod',true);applyGod(p)end
+   if type(saved)=='table'and type(saved.rotation)=='table'then rotationState=saved.rotation end
+  end
  end)end
  p.CharacterAdded:Connect(function(c)if Access.IsAdmin(p)then onCharacter(p,c)end end)
  if p.Character and Access.IsAdmin(p)then task.spawn(onCharacter,p,p.Character)end

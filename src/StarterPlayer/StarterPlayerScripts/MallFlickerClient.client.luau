@@ -1,15 +1,20 @@
--- Mall only: dying fluorescent tubes and store signs stutter (client-side, cosmetic, near the camera only).
+-- Any map: dying fixtures, fluorescent tubes and store signs stutter (client-side, cosmetic, near the camera only).
+-- 2026-10-27 (ScareFeel): every map kind now has a few flickering fixtures (MapLighting.darkenFixtures, Hotel/Hospital/
+-- School dressing), so the loop runs on every map; with nothing tagged it costs nothing. (It used to return on live
+-- servers when 'Mall' was not in ReplicatedStorage.MapPool.)
 local CollectionService=game:GetService('CollectionService')
 local RunService=game:GetService('RunService')
 local TAG='MallFlicker'
 local state={}
+local looks={} -- each part's lit look, read the first time it flickers
 local function setOn(p,on)
  local light=p:FindFirstChildWhichIsA('Light')
  if light then
+  local look=looks[p];if not look then look={material=p.Material,color=p.Color,transparency=p.Transparency};looks[p]=look end
   light.Enabled=on
-  p.Material=on and Enum.Material.Neon or Enum.Material.SmoothPlastic
-  p.Transparency=on and .12 or 0
-  p.Color=on and Color3.fromRGB(236,230,196) or Color3.fromRGB(150,147,132)
+  p.Material=on and look.material or Enum.Material.SmoothPlastic
+  p.Transparency=on and look.transparency or 0
+  p.Color=on and look.color or look.color:Lerp(Color3.fromRGB(20,18,16),.55)
  end
  for _,g in ipairs(p:GetChildren()) do if g:IsA('SurfaceGui') then
   local label=g:FindFirstChildWhichIsA('TextLabel');g.Brightness=on and 1.4 or .4
@@ -26,11 +31,12 @@ RunService.Heartbeat:Connect(function(dt)
    local s=state[p]
    if not s then s={on=true,next=now+math.random()*4};state[p]=s end
    if now>=s.next then
-    if s.on then s.on=false;s.next=now+(math.random()<.7 and math.random()*.12+.04 or math.random()*.9+.2)
-    else s.on=true;s.next=now+(math.random()<.6 and math.random()*.25+.05 or math.random()*5+1.5) end
+    -- slowest stutter: .15 s off + .35 s on = 2 Hz (scare brief: never above 3 Hz)
+    if s.on then s.on=false;s.next=now+(math.random()<.7 and math.random()*.25+.15 or math.random()*.9+.4)
+    else s.on=true;s.next=now+(math.random()<.5 and math.random()*.35+.35 or math.random()*5+1.5) end
     setOn(p,s.on)
    end
   end
  end
 end)
-CollectionService:GetInstanceRemovedSignal(TAG):Connect(function(p) state[p]=nil end)
+CollectionService:GetInstanceRemovedSignal(TAG):Connect(function(p) state[p]=nil;looks[p]=nil end)

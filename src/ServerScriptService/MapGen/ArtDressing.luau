@@ -2,6 +2,12 @@ local F=require(script.Parent.Furnisher)
 local A={}
 local checker={Foyer=true,Hall=true,Kitchen=true,Pantry=true,Bath=true,Laundry=true,Conservatory=true,Stair=false}
 function A.Floor(plan,room,model) if plan.mapKind=='Mall' or plan.mapKind=='Cruise' or plan.mapKind=='Hospital' or plan.mapKind=='School' or plan.mapKind=='Hotel' then return end -- MallDressing textures the terrazzo floor
+ if plan.mapKind=='Birthday' then -- clean pastel vinyl: the BirthdayVinyl variants had orange-red smudges (red rule, 2026-10-21)
+  local sum=plan.seed;for i=1,#room.name do sum+=room.name:byte(i) end
+  local tones={Color3.fromRGB(198,226,212),Color3.fromRGB(204,216,236),Color3.fromRGB(236,228,208)}
+  for _,p in ipairs(model:GetChildren()) do if p:IsA('BasePart') and p~=model.PrimaryPart then p.Color=tones[sum%3+1];p.Material=Enum.Material.SmoothPlastic;p.MaterialVariant='';if p:IsA('MeshPart') then p.TextureID='' end end end
+  return
+ end
  local code=plan.mapKind=='Dungeon' and 'F_DungeonFlagstone' or plan.mapKind=='Birthday' and 'F_BirthdayVinyl' or checker[room.type] and 'F_MansionChecker' or 'F_MansionParquet'
  local sum=plan.seed;for i=1,#room.name do sum+=room.name:byte(i) end
  local variant=game.MaterialService:FindFirstChild('Horror_'..code..(sum%2==0 and '_A' or '_B'));if plan.mapKind=='Dungeon' then variant=game.MaterialService:FindFirstChild('Horror_DungeonMatte') end;if not variant then return end

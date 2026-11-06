@@ -73,8 +73,7 @@ local function hideTorsoStuff(c,saved,torso)
  local feet={c:FindFirstChild('LeftFoot'),c:FindFirstChild('RightFoot')}
  local function hide(x)
   if saved.hidden[x] then return end
-  if x:IsA('BasePart') then saved.hidden[x]=x.Transparency;x.Transparency=1
-  elseif x:IsA('Decal') or x:IsA('Texture') then saved.hidden[x]=x.Transparency;x.Transparency=1
+  if x:IsA('BasePart') or x:IsA('Decal') or x:IsA('Texture') then saved.hidden[x]=x.Transparency;x.Transparency=1
   elseif x:IsA('ParticleEmitter') or x:IsA('Beam') or x:IsA('Trail') or x:IsA('SurfaceGui') or x:IsA('Light') then saved.hidden[x]=x.Enabled;x.Enabled=false end
  end
  hide(torso)
@@ -112,9 +111,9 @@ local function stalkFolds(c)
    local face=(ball and pupil) and head.CFrame:VectorToObjectSpace(pupil.Position-ball.Position) or Vector3.new(0,0,1)
    face=Vector3.new(face.X,0,face.Z);face=face.Magnitude>1e-3 and face.Unit or Vector3.new(0,0,1)
    local back=-face
-   local out=Vector3.new(m.C0.Position.X,0,m.C0.Position.Z);out=out-out:Dot(face)*face;out=out.Magnitude>1e-3 and out.Unit or Vector3.yAxis:Cross(face)
+   local out=Vector3.new(m.C0.Position.X,0,m.C0.Position.Z);out=out-out:Dot(face)*face;out=out.Magnitude>1e-3 and out.Unit or Vector3.new(0,1,0):Cross(face)
    -- rotate the stalk's up-axis toward 'back', then toward its own side
-   local fold=CFrame.fromAxisAngle(Vector3.yAxis:Cross(back).Unit,STALK_FOLD)*CFrame.fromAxisAngle(Vector3.yAxis:Cross(out).Unit,STALK_SPLAY)
+   local fold=CFrame.fromAxisAngle(Vector3.new(0,1,0):Cross(back).Unit,STALK_FOLD)*CFrame.fromAxisAngle(Vector3.new(0,1,0):Cross(out).Unit,STALK_SPLAY)
    folds[m]={original=m.C0,folded=CFrame.new(m.C0.Position)*fold*m.C0.Rotation}
   end
  end
@@ -175,7 +174,7 @@ local function crouch(p)
  if state[p] or busy[p] then return end
  local c=p.Character;local hum=c and c:FindFirstChildOfClass('Humanoid');local torso=c and c:FindFirstChild('UpperTorso')
  if not hum or hum.Health<=0 or not torso or p:GetAttribute('MissionActive')~=true then return end
- if p:GetAttribute('ClosetState') or p:GetAttribute('Hiding') or p:GetAttribute('MonsterJumpscareActive') or p:GetAttribute('RoundDead') then return end
+ if p:GetAttribute('ClosetState') or p:GetAttribute('Hiding') or p:GetAttribute('MonsterJumpscareActive') or p:GetAttribute('RoundDead') or p:GetAttribute('OmenShrunk') then return end
  watchMap();ensureGroups()
  local saved={hidden={},groups={},hip=hum.HipHeight,jumpHeight=hum.JumpHeight,jumpPower=hum.JumpPower}
  saved.waist=joint(c,'Waist');saved.neck=joint(c,'Neck')
@@ -204,7 +203,7 @@ end)
 local function watchPlayer(p)
  p.CharacterAdded:Connect(function() stand(p,true) end)
  p.CharacterRemoving:Connect(function() stand(p,true) end)
- for _,a in {'ClosetState','MonsterJumpscareActive','RoundDead','MissionActive'} do
+ for _,a in {'ClosetState','MonsterJumpscareActive','RoundDead','MissionActive','OmenShrunk'} do
   p:GetAttributeChangedSignal(a):Connect(function()
    if not state[p] then return end
    if (a=='MissionActive' and p:GetAttribute(a)~=true) or (a~='MissionActive' and p:GetAttribute(a)) then stand(p,true) end
@@ -214,6 +213,16 @@ end
 for _,p in Players:GetPlayers() do watchPlayer(p) end
 Players.PlayerAdded:Connect(watchPlayer)
 Players.PlayerRemoving:Connect(function(p) state[p]=nil;busy[p]=nil end)
+-- TEENY TINY omen (Monsters build 2026-10-27): shrunk bodies use the crouch collision group (so they fit under desks and
+-- tables) without crouching.
+local tiny={} -- [Player]=Character whose parts were moved into CROUCH_GROUP
+local function tinyGroups(p,c,on)
+ for _,x in c:GetDescendants() do if x:IsA('BasePart') then
+  if on and x.CollisionGroup==CHAR_GROUP then x.CollisionGroup=CROUCH_GROUP elseif not on and x.CollisionGroup==CROUCH_GROUP then x.CollisionGroup=CHAR_GROUP end
+ end end
+ tiny[p]=on and c or nil
+end
+Players.PlayerRemoving:Connect(function(p) tiny[p]=nil end)
 
 -- cover check: tucked under a desk/table long enough counts as hiding
 local timer=0
@@ -228,5 +237,19 @@ RunService.Heartbeat:Connect(function(dt)
    s.coverSince=s.coverSince or now
    if now-s.coverSince>=HIDE_DELAY and not p:GetAttribute('DeskHiding') then setHiding(p,true) end
   else s.coverSince=nil;setHiding(p,false) end
+ end
+ -- TEENY TINY omen (RecoveryRoundServer sets OmenShrunk): a shrunk player is crouch-sized without crouching. Standing
+ -- under a desk or table hides them at once, the same rule as crouching (HIDE_DELAY 0).
+ for _,p in Players:GetPlayers() do
+  local c=p.Character
+  if p:GetAttribute('OmenShrunk') and not state[p] and c then
+   ensureGroups();tinyGroups(p,c,true) -- every tick: cosmetics added later join too (a few dozen parts, cheap)
+   local hum=c:FindFirstChildOfClass('Humanoid')
+   if hum and hum.Health>0 and underCover(c) then if not p:GetAttribute('DeskHiding') then setHiding(p,true) end
+   elseif p:GetAttribute('DeskHiding') then setHiding(p,false) end
+  elseif tiny[p] and not p:GetAttribute('OmenShrunk') then
+   if tiny[p].Parent then tinyGroups(p,tiny[p],false) else tiny[p]=nil end
+   if p:GetAttribute('DeskHiding') then setHiding(p,false) end
+  end
  end
 end)

@@ -18,7 +18,7 @@ local MAX_MONSTERS=3
 local JUMPSCARE_WAIT=4.5 -- longest wait for this player's jumpscare to clear
 local FOV_START,FOV_END=58,38
 local AURA=Color3.fromRGB(200,20,24)
-local NAMES={Crawler='THE COLLAR CRAWLER',Wraith='THE TEAR WRAITH',Bellhop='THE HAUNTED BELLHOP',Lantern='THE LANTERN WATCHER',Neon='THE NEON TRIPOD'}
+local NAMES={Crawler='THE COLLAR CRAWLER',Wraith='THE TEAR WRAITH',Bellhop='THE HAUNTED BELLHOP',Lantern='THE LANTERN WATCHER',Neon='THE NEON TRIPOD',Mittens='LONELY MITTENS',Dancer='THE WIND-UP DANCER',Yoyo='THE YO-YO KID'}
 
 local state;repeat state=RS:FindFirstChild('RecoveryRound');if not state then task.wait(.25) end until state
 local playing=false
@@ -101,7 +101,8 @@ local function play()
  local savedFov=camera.FieldOfView
  -- Every other HUD steps aside for the cutscene and comes back afterwards.
  local hidden={}
- for _,g in player.PlayerGui:GetChildren() do if g:IsA('ScreenGui') and g~=ui.gui and g.Enabled then g.Enabled=false;table.insert(hidden,g) end end
+ -- The spectator bar stays: it is the one revive / buy-a-revive prompt (no second button here).
+ for _,g in player.PlayerGui:GetChildren() do if g:IsA('ScreenGui') and g~=ui.gui and g.Name~='RecoverySpectator' and g.Enabled then g.Enabled=false;table.insert(hidden,g) end end
  local grade=Instance.new('ColorCorrectionEffect');grade.Name='MonsterWinGrade';grade.TintColor=Color3.fromRGB(255,196,190);grade.Contrast=.25;grade.Saturation=-.35;grade.Parent=Lighting
  local cleanup={}
  local lights={}
@@ -146,25 +147,11 @@ local function play()
  for i=1,#shots do
   task.delay(INTRO+(i-1)*SHOT,function() Audio.Play(i==1 and 'MonsterNotice' or 'MonsterRush') end)
  end
- -- Revive prompt on top of the cutscene while the wipe can still be undone; a revive ends the cutscene early.
- local revive=Instance.new('ScreenGui');revive.Name='MonsterWinRevive';revive.IgnoreGuiInset=true;revive.DisplayOrder=10050;revive.ResetOnSpawn=false;revive.Parent=player.PlayerGui
- local prompt=Instance.new('TextButton');prompt.Name='RevivePrompt';prompt.AnchorPoint=Vector2.new(.5,1);prompt.Position=UDim2.new(.5,0,1,-42);prompt.Size=UDim2.fromOffset(340,46)
- prompt.BackgroundColor3=Color3.fromRGB(167,202,127);prompt.TextColor3=Color3.fromRGB(8,18,22);prompt.Font=Enum.Font.FredokaOne;prompt.TextSize=18;prompt.AutoButtonColor=true;prompt.Parent=revive
- Instance.new('UICorner',prompt).CornerRadius=UDim.new(0,12)
- prompt.Activated:Connect(function()
-  local free=player:GetAttribute('Pass_free_revive')and not player:GetAttribute('FreeReviveUsed')
-  if free or(player:GetAttribute('ReviveTokens')or 0)>0 then RS:WaitForChild('ReviveEvent'):FireServer()
-  else pcall(function()game:GetService('MarketplaceService'):PromptProductPurchase(player,3715702819)end)end
- end)
+ -- Reviving (or buying a revive) happens on the spectator bar, which stays visible above; a revive ends the cutscene early.
  local started=os.clock()
  while os.clock()-started<total and state:GetAttribute('Phase')=='Failed' do
-  local dead=player:GetAttribute('RoundDead')==true
-  local finish=state:GetAttribute('TransitionEnds');local seconds=finish and math.max(0,math.ceil(finish-workspace:GetServerTimeNow()))or 0
-  prompt.Visible=state:GetAttribute('WipeRevivable')==true and dead
-  prompt.Text=player:GetAttribute('Reviving')and 'REVIVING…' or ('TEAM DOWN - REVIVE (R / Y)'..(seconds>0 and '  '..seconds..'s' or ''))
   task.wait(.1)
  end
- revive:Destroy()
  Run:UnbindFromRenderStep('MonsterWinCutscene')
  for _,x in cleanup do x:Destroy() end
  grade:Destroy();ui.gui:Destroy()

@@ -50,11 +50,13 @@ for _,player in Players:GetPlayers()do playerAdded(player)end
 local round=game.ReplicatedStorage:WaitForChild('RecoveryRound',math.huge)
 local phase=round:GetAttribute('Phase');local sold=round:GetAttribute('Sold') or 0;local saleStartedSold=sold
 round:GetAttributeChangedSignal('Sold'):Connect(function()
- local now=round:GetAttribute('Sold') or 0;if now>sold then Audio.Play('SaleComplete')end;sold=now
+ -- During an item-by-item sale the register rings once at the end (Phase handler), not per item.
+ local now=round:GetAttribute('Sold') or 0;if now>sold and phase~='Selling' then Audio.Play('SaleComplete')end;sold=now
 end)
 round:GetAttributeChangedSignal('Phase'):Connect(function()
  local now=round:GetAttribute('Phase');if now==phase then return end
  local previous=phase;phase=now
+ if previous=='Selling' and sold>saleStartedSold then Audio.Play('SaleComplete') end
  local camp=workspace:FindFirstChild('RecoveryCamp');local van=camp and camp:FindFirstChild('AnomalyRecoveryVan')
  if now=='Selling' then saleStartedSold=sold;Audio.Play('SaleStart',van)
  elseif previous=='Selling' and now=='Searching' and sold<=saleStartedSold then Audio.Play('SaleCancelled')

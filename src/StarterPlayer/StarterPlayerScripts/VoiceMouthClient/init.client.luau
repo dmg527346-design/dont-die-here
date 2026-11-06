@@ -1,3 +1,10 @@
+local Selected=require(game.ReplicatedStorage:WaitForChild('SelectedItemCharacterEffects'))
+-- Independent Studio draft leases reuse the existing renderer without owning normal curse state.
+local itemDraftStudio = game:GetService('RunService'):IsStudio()
+local function draftLease(q, key)
+ local original = q:GetAttribute(key) or 0
+ return math.max(original, itemDraftStudio and (q:GetAttribute('Draft' .. key) or 0) or 0)
+end
 local Preferences=require(game.ReplicatedStorage:WaitForChild('HorrorPreferences'))
 -- Voice-reactive lips and local pooled spit. Reads only the local player's voice amplitude.
 local Players=game:GetService('Players')
@@ -21,10 +28,87 @@ local SMILE_HEIGHT = .72
 local SMILE_LIFT = .10
 local SMILE_TILT = math.rad(0)
 local SMILE_IN_SPEED = 6
+-- The van radio (GearShopServer): anyone standing right next to it smiles (owner 2026-10-26).
+local RADIO_SMILE_RANGE = 6
+local radioPart,radioLook=nil,0
+local function radioPosition()
+ if os.clock()-radioLook>1 or (radioPart and not radioPart.Parent) then
+  radioLook=os.clock();local camp=workspace:FindFirstChild('RecoveryCamp');local r=camp and camp:FindFirstChild('VanRadio',true);radioPart=r and r.PrimaryPart or nil
+ end
+ return radioPart and radioPart.Position
+end
 local SMILE_OUT_SPEED = 22
 local SPEECH_SMILE_HOLD = .22
 local LipCurve=require(script:WaitForChild('DiscoLipCurve'))
+-- Selected-only assembly transform. Native speech/curse poses are evaluated first
+-- on every frame, so the normal owner's sizes and missing-tooth visibility restore
+-- without caching an already-deformed frame or resetting normal curse state.
+local function selectedJointFrame(joint)
+    return joint.Part0.CFrame*joint.C0*joint.Transform*joint.C1:Inverse()
+end
+local function selectedSetJointFrame(joint,worldFrame)
+    joint.Transform=joint.C0:Inverse()*joint.Part0.CFrame:ToObjectSpace(worldFrame)*joint.C1
+end
+local function selectedScalePiece(part,joint,sourceFrame,targetFrame,scale,extra)
+    local relative=sourceFrame:ToObjectSpace(selectedJointFrame(joint))
+    local center=Selected.Mul(relative.Position+(extra or Vector3.zero),scale)
+    -- Bone rotations remain intact. Scale each local dimension along its evaluated
+    -- axis, including the normal jawbreaker's already-rotated/chipped teeth.
+    local dimensions=Vector3.new(Selected.Mul(relative.XVector,scale).Magnitude,
+        Selected.Mul(relative.YVector,scale).Magnitude,Selected.Mul(relative.ZVector,scale).Magnitude)
+    part.Size=Selected.Mul(part.Size,dimensions)
+    local scaledRelative=CFrame.new(center)*relative.Rotation
+    selectedSetJointFrame(joint,targetFrame*scaledRelative)
+    return scaledRelative
+end
+local function selectedToothEnclosed(relative,size,lipSize)
+    -- The visible lip ellipse is a conservative shell bound. Closed/puckered
+    -- mouths must cover a tooth completely; a tooth outside it becomes hidden.
+    -- Existing smile, sad, kiss and missing-tooth transparency can only increase.
+    local rx,ry=lipSize.X*.49,lipSize.Y*.49
+    if rx<.025 or ry<.025 then return false end
+    local half=size*.5
+    local maxEllipse=0
+    for _,x in {-1,1}do for _,y in {-1,1}do for _,z in {-1,1}do
+        local p=relative:PointToWorldSpace(Vector3.new(x*half.X,y*half.Y,z*half.Z))
+        maxEllipse=math.max(maxEllipse,(p.X/rx)^2+(p.Y/ry)^2)
+        if maxEllipse>1 or math.abs(p.Z)>lipSize.Z*.8+.01 then return false end
+    end end end
+    return true
+end
+local function applySelectedMouthAssembly(rig,descriptor)
+    local v=descriptor.mouth
+    local sourceFrame=selectedJointFrame(rig.mouthJoint)
+    local targetFrame=sourceFrame*CFrame.new(v.offset)*CFrame.Angles(v.angles.X,v.angles.Y,v.angles.Z)
+    -- FaceBridge is the structural green head cap supporting the eye anchors.
+    -- Its native voice-owner size/pose above must remain independent of the lips.
+    for _,piece in {{rig.mouth,rig.mouthJoint},{rig.inside,rig.insideJoint},
+        {rig.throat,rig.throatJoint},{rig.depth,rig.depthJoint},{rig.back,rig.backJoint}}do
+        selectedScalePiece(piece[1],piece[2],sourceFrame,targetFrame,v.scale)
+    end
+    local hidden=0
+    for _,tooth in rig.teeth do
+        local chatter=Vector3.new(0,(tooth.row or 1)*v.teethChatter,0)
+        local relative=selectedScalePiece(tooth.part,tooth.joint,sourceFrame,targetFrame,v.scale,chatter)
+        if not selectedToothEnclosed(relative,tooth.part.Size,rig.mouth.Size)then
+            tooth.part.Transparency=1;hidden+=1
+        end
+    end
+    rig.character:SetAttribute('SelectedMouthHiddenTeeth',hidden)
+end
+
 local rigs={}
+-- Resources parented outside the character need the same lifetime as their rig.
+local function removeRig(p,expected)
+    local rig=expected or rigs[p]
+    if not rig then return end
+    if rigs[p]==rig then rigs[p]=nil end
+    if rig.retired then return end
+    rig.retired=true
+    if rig.destroyConnection then rig.destroyConnection:Disconnect();rig.destroyConnection=nil end
+    if rig.gumBubble then rig.gumBubble:Destroy();rig.gumBubble=nil end
+    if rig.lipCurve then rig.lipCurve:Destroy();rig.lipCurve=nil end
+end
 
 local input,analyzer,wire,hissFilter,hissAnalyzer,hissInputWire,hissOutputWire
 local lastSent,lastLevel,lastEmphasis,sequence=0,0,0,0
@@ -59,7 +143,7 @@ local function addCharacter(p,character)
   end
  end
  for _,x in ipairs(character:GetDescendants()) do silence(x) end;character.DescendantAdded:Connect(silence)
-    rigs[p]=nil
+    removeRig(p)
     if not character:GetAttribute('CustomCharacterVersion') then return end
     local head=character:WaitForChild('Head',10)
     if not head then return end
@@ -82,6 +166,10 @@ local function addCharacter(p,character)
         throatSize=throat.Size,depthSize=depth.Size,backSize=back.Size,
         mouthJoint=mouth:WaitForChild('VoiceLipJoint'),insideJoint=inside:WaitForChild('VoiceLipJoint'),bridgeJoint=bridge:WaitForChild('FaceBridgeJoint'),
         throatJoint=throat:WaitForChild('VoiceMouthJoint'),depthJoint=depth:WaitForChild('VoiceMouthJoint'),backJoint=back:WaitForChild('VoiceMouthJoint'),
+        -- The template's lip joints now rest on the modelled face (C0); this script's poses were written for the old C0
+        -- (attribute DriverC0), so each frame they are re-expressed against the new one (lipFix below). Same look as before.
+        mouthFix=(function()local j=mouth:FindFirstChild('VoiceLipJoint');local d=j and j:GetAttribute('DriverC0');return typeof(d)=='CFrame'and j.C0:Inverse()*d or CFrame.identity end)(),
+        insideFix=(function()local j=inside:FindFirstChild('VoiceLipJoint');local d=j and j:GetAttribute('DriverC0');return typeof(d)=='CFrame'and j.C0:Inverse()*d or CFrame.identity end)(),
         kiss=0,smile=0,sad=0,lastSpeech=-math.huge,
         target=0,emphasis=0,prevEmphasis=0,envelope=0,updated=0,talk=0,quiet=0,lastSpit=0,lastAccent=0,lastStamp=0}
     local rig=rigs[p]
@@ -92,18 +180,18 @@ local function addCharacter(p,character)
         rig.lipCurve=curve
         mouth:SetAttribute('DiscoLipCurveReady',true)
     end)
-    character.Destroying:Once(function()if rig.lipCurve then rig.lipCurve:Destroy();rig.lipCurve=nil end end)
+    rig.destroyConnection=character.Destroying:Once(function()removeRig(p,rig)end)
 end
 local function join(p)
     p.CharacterAdded:Connect(function(c) task.spawn(addCharacter,p,c) end)
-    p.CharacterRemoving:Connect(function(c) if rigs[p] and rigs[p].character==c then rigs[p]=nil end end)
+    p.CharacterRemoving:Connect(function(c) if rigs[p] and rigs[p].character==c then removeRig(p,rigs[p]) end end)
     if p.Character then task.spawn(addCharacter,p,p.Character) end
 end
 Players.PlayerAdded:Connect(join)
-Players.PlayerRemoving:Connect(function(p) rigs[p]=nil end)
+Players.PlayerRemoving:Connect(function(p) removeRig(p) end)
 for _,p in Players:GetPlayers() do join(p) end
 task.spawn(function()
-    require(game.ReplicatedStorage:WaitForChild('CharacterEntityAdapter')).Watch(addCharacter,function(p)rigs[p]=nil end)
+    require(game.ReplicatedStorage:WaitForChild('CharacterEntityAdapter')).Watch(addCharacter,function(p)removeRig(p)end)
 end)
 event.OnClientEvent:Connect(function(p,level,stamp,emphasis)
     if p==player then return end
@@ -177,7 +265,7 @@ RunService.PreSimulation:Connect(function(dt)
     end
     local camera=workspace.CurrentCamera
     for p,rig in rigs do
-        if not rig.head.Parent then rigs[p]=nil;continue end
+        if not rig.head.Parent then removeRig(p,rig);continue end
         local target=now-rig.updated<STALE_SECONDS and rig.target or 0
         local emphasis=now-rig.updated<STALE_SECONDS and rig.emphasis or 0
         -- Ventriloquist doll: the holder's own voice drives the doll's mouth; everyone else's voice drives the holder's mouth.
@@ -196,11 +284,18 @@ RunService.PreSimulation:Connect(function(dt)
         if target>.06 or emphasis>.15 then rig.lastSpeech=now end
         local holdingDisco=p:GetAttribute('CursedActive')=='DiscoBall' and healthy and healthy.Health>0
         local speaking=target>.06 or level>.045 or now-rig.lastSpeech<SPEECH_SMILE_HOLD
-        local crying=healthy and healthy.Health>0 and workspace:GetServerTimeNow()<(p:GetAttribute('CryingUntil')or 0)
+        local crying=healthy and healthy.Health>0 and workspace:GetServerTimeNow()<(draftLease(p,'CryingUntil'))
+        -- Funny face beats (close-up choices ExtraChoices2, van gear GearShopServer): 'grin' | 'gasp' | 'pucker' for a moment.
+        local faceBeat=healthy and healthy.Health>0 and workspace:GetServerTimeNow()<(p:GetAttribute('FaceBeatUntil')or 0) and p:GetAttribute('FaceBeat') or nil
         local fear=healthy and healthy.Health>0 and (workspace:GetServerTimeNow()<(p:GetAttribute('MirrorFearUntil')or 0) or (type(p)=='table' and p.IsEntity) and rig.character:GetAttribute('EntityState')=='Freakout')
+        if faceBeat=='gasp' or faceBeat=='frown' then fear=true end -- 'frown': ItemBatch6/7 sulk -- wide open, trembling: the shocked face
         local sadTarget=(crying or fear) and not speaking and 1 or 0
         rig.sad+=(sadTarget-rig.sad)*(1-math.exp(-dt*6))
-        local smileTarget=holdingDisco and not crying and not speaking and 1 or 0
+        local radioAt=radioPosition()
+        local byRadio=radioAt~=nil and healthy and healthy.Health>0 and (rig.head.Position-radioAt).Magnitude<RADIO_SMILE_RANGE
+        if (rig.character:GetAttribute('RadioSmile')==true)~=(byRadio==true) then rig.character:SetAttribute('RadioSmile',byRadio or nil) end -- local mark only (tests)
+        local grinning=healthy and healthy.Health>0 and workspace:GetServerTimeNow()<(p:GetAttribute('GrinUntil')or 0) -- world features (WorldA): a short proud grin
+        local smileTarget=(holdingDisco or byRadio or grinning or faceBeat=='grin' or faceBeat=='laugh') and not crying and not speaking and 1 or 0
         local smileSpeed=smileTarget>rig.smile and SMILE_IN_SPEED or SMILE_OUT_SPEED
         rig.smile+=(smileTarget-rig.smile)*(1-math.exp(-dt*smileSpeed))
         if rig.smile<.0001 then rig.smile=0 end
@@ -237,7 +332,7 @@ RunService.PreSimulation:Connect(function(dt)
         end
         -- Blend from the fully evaluated voice pose: speech and spit retain their existing owner.
         local smile=rig.smile
-        if rig.lipCurve then rig.lipCurve:Update(smile,rig.sad) end
+        if rig.lipCurve then rig.lipCurve:Update(smile,rig.sad,p:GetAttribute('DraftSelectedItem')=='BackwardsHairdryer'and workspace:GetServerTimeNow()<(p:GetAttribute('DraftSelectedUntil')or 0)and 1 or 0) end
         local smilePose=CFrame.new(0,SMILE_LIFT,.62)*CFrame.Angles(SMILE_TILT,0,0)
         rig.mouth.Size=rig.mouth.Size:Lerp(Vector3.new(rig.mouthSize.X*SMILE_WIDTH,SMILE_HEIGHT,rig.mouthSize.Z),smile)
         rig.inside.Size=rig.inside.Size:Lerp(Vector3.new(rig.insideSize.X*SMILE_WIDTH,.54,rig.insideSize.Z),smile)
@@ -264,14 +359,15 @@ RunService.PreSimulation:Connect(function(dt)
         rig.character:SetAttribute('CloudSadWeight',sad)
         local vanityPhase=(workspace:GetServerTimeNow()+p.UserId%7*.17)%4.5
         local kissTarget=p:GetAttribute('CursedActive')=='Mirror' and healthy and healthy.Health>0 and not speaking and math.clamp((vanityPhase-.75)/.3,0,1)*math.clamp((2.1-vanityPhase)/.45,0,1) or 0
-        local whistle=workspace:GetServerTimeNow()<(p:GetAttribute('WhistleUntil')or 0)
+        local whistle=workspace:GetServerTimeNow()<(draftLease(p,'WhistleUntil'))
         local party=workspace:GetServerTimeNow()<(p:GetAttribute('PartyBlowerUntil')or 0)
         local partyPhase=(workspace:GetServerTimeNow()-(p:GetAttribute('PartyBlowerStart')or 0))%1.65
         if healthy and healthy.Health>0 and not speaking and (whistle or party and partyPhase<.95)then kissTarget=1 end
         -- Makeup kit: lips stay scrunched into a pout for the whole level (server clears MadeUp).
         if healthy and healthy.Health>0 and not speaking and p:GetAttribute('MadeUp')then kissTarget=math.max(kissTarget,.92)end
         -- Sour lemon: the whole mouth puckers hard while it is held (even mid-sentence).
-        if healthy and healthy.Health>0 and workspace:GetServerTimeNow()<(p:GetAttribute('LemonUntil')or 0)then kissTarget=1 end
+        if healthy and healthy.Health>0 and workspace:GetServerTimeNow()<(draftLease(p,'LemonUntil'))then kissTarget=1 end
+        if faceBeat=='pucker' and healthy and healthy.Health>0 and not speaking then kissTarget=1 end
         rig.kiss+=(kissTarget-rig.kiss)*(1-math.exp(-dt*18))
         local kiss=rig.kiss
         rig.mouth.Size=rig.mouth.Size:Lerp(Vector3.new(rig.mouthSize.X*.48,.48,rig.mouthSize.Z*1.5),kiss)
@@ -305,7 +401,7 @@ RunService.PreSimulation:Connect(function(dt)
             fire.light.Brightness=breathing and 2.2 or 0
         end
         -- Popsicle: teeth chatter while frozen and not talking.
-        if alive and not speaking and serverNow<(p:GetAttribute('FrozenUntil')or 0)then
+        if alive and not speaking and serverNow<(draftLease(p,'FrozenUntil'))then
             for i,tooth in rig.teeth do tooth.joint.Transform*=CFrame.new(math.sin(now*47+i)*.012,(tooth.row or 1)*math.abs(math.sin(now*38))*.035,0)end
         end
         local faceDir=rig.head.CFrame:VectorToWorldSpace(Vector3.new(1,0,1)*rig.head.CFrame:VectorToObjectSpace(rig.mouth.Position-rig.head.Position))
@@ -363,6 +459,20 @@ RunService.PreSimulation:Connect(function(dt)
                 end
             end
         end
+
+        rig.mouthJoint.Transform=rig.mouthFix*rig.mouthJoint.Transform
+        rig.insideJoint.Transform=rig.insideFix*rig.insideJoint.Transform
+        local descriptor=healthy and healthy.Health>0 and Selected.Read(p,0)
+        local selectedMouth=descriptor and descriptor.mouth
+        if selectedMouth then
+            applySelectedMouthAssembly(rig,descriptor)
+            rig.character:SetAttribute('SelectedMouthRendered',descriptor.id)
+        else
+            -- The native owner above has rebuilt all sizes, joints and tooth
+            -- transparency for this frame, including missing/broken teeth.
+            rig.character:SetAttribute('SelectedMouthRendered',nil)
+            rig.character:SetAttribute('SelectedMouthHiddenTeeth',nil)
+        end
         local forced=target>=SPIT_LOUD_FORCE_LEVEL
 
         local accent=emphasis>.4 and target>.1
@@ -386,3 +496,19 @@ RunService.PreSimulation:Connect(function(dt)
     end
 end)
 
+
+-- TEENY TINY omen (RecoveryRoundServer, Monsters build 2026-10-27): OmenScaleAt announces a body rescale. The cached mouth
+-- and teeth sizes belong to the old size, so the rig is dropped at once and rebuilt half a second after the change.
+do
+ local function watchScale(p)
+  p:GetAttributeChangedSignal('OmenScaleAt'):Connect(function()
+   local at=p:GetAttribute('OmenScaleAt');if type(at)~='number'then return end
+   local c=p.Character;removeRig(p)
+   task.delay(math.max(0,at-workspace:GetServerTimeNow())+.5,function()
+    if p.Parent and c and p.Character==c and c.Parent and not rigs[p]then addCharacter(p,c)end
+   end)
+  end)
+ end
+ for _,p in Players:GetPlayers()do watchScale(p)end
+ Players.PlayerAdded:Connect(watchScale)
+end

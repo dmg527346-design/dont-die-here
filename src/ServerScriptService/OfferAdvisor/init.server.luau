@@ -20,7 +20,8 @@ local friendCache={}
 local catalog={}
 for _,offer in ipairs(Catalog.RobuxOffers)do catalog[offer.id]=offer end
 local copy={
- free_revive={title='Need a second chance?',body='Second Chance adds one free self revive each round. Take a look?',tag='SECOND CHANCE',accent='#A7CA7F'},
+ free_revive={title='Want a second chance every level?',body='Second Chance gives you one free self revive every level. Take a look?',tag='SECOND CHANCE',accent='#A7CA7F'},
+ revive_pack_3={title='Grab 3 backup revives',body='A pack of 3 self revive tokens for when a run goes wrong. View it?',tag='BACKUP PLAN',accent='#EDC568'},
  revive_token={title='Keep a backup revive',body='A saved self revive token can help when a run goes wrong. View it?',tag='BACKUP PLAN',accent='#EDC568'},
  jumpscare_all={title='A prank for your crew?',body='Save a group jumpscare charge for a surprise with friends. View it?',tag='FRIENDS & FRIGHTS',accent='#C5A4E5'},
  pass_hat_crown={title='Stand out with your crew',body='The crown cosmetic pass gives your character a royal look. View it?',tag='YOUR LOOK',accent='#EDC568'},
@@ -109,6 +110,13 @@ local function context(p,s,now)
    if m:GetAttribute('AIState')=='Chase'or(r and mr and(mr.Position-r.Position).Magnitude<THREAT_DISTANCE)then safe=false;break end
   end
  end end
+ -- A card already on screen only hides for real danger to this player (owner 2026-10-25: picking up an item or a
+ -- chase somewhere else in the map hid it after a second): dead, jumpscared, grabbed, just hit, or a monster close by.
+ local danger=not(r~=nil and h~=nil and h.Health>0 and p:GetAttribute('RoundDead')~=true)or p:GetAttribute('MonsterJumpscareActive')==true or p:GetAttribute('PhysicalGrabActive')==true or now-s.damageAt<DAMAGE_GRACE
+ if not danger and monsters and r then for _,m in ipairs(monsters:GetChildren())do
+  local mr=m:IsA('Model')and(m.PrimaryPart or m:FindFirstChild('HumanoidRootPart'))
+  if mr and(mr.Position-r.Position).Magnitude<THREAT_DISTANCE then danger=true;break end
+ end end
  local count,nearSocial=0,false
  for _,q in ipairs(Players:GetPlayers())do if q:GetAttribute('MissionActive')==true then
   count+=1
@@ -123,7 +131,7 @@ local function context(p,s,now)
  end end
  local snapshot=Progress.Snapshot(p)
  local modal=p:GetAttribute('VanShopOpen')or p:GetAttribute('AppearanceOpen')or p:GetAttribute('MapOpen')or p:GetAttribute('AdminPassPanelOpen')
- return {mission=mission,phase=phase,safe=safe,modal=modal==true,ready=snapshot.ready==true,solo=count<=1,social=s.nearFriendSeconds>=SOCIAL_SECONDS,owned=owned,reviveTokens=snapshot.reviveTokens or 0,jumpscareCharges=snapshot.jumpscareCharges or 0,freeReviveAvailable=owned.free_revive==true and p:GetAttribute('FreeReviveUsed')~=true}
+ return {mission=mission,phase=phase,safe=safe,danger=danger,modal=modal==true,ready=snapshot.ready==true,veteran=((snapshot.stats and snapshot.stats.RunsCompleted) or 0)>0,solo=count<=1,social=s.nearFriendSeconds>=SOCIAL_SECONDS,owned=owned,reviveTokens=snapshot.reviveTokens or 0,jumpscareCharges=snapshot.jumpscareCharges or 0,freeReviveAvailable=owned.free_revive==true and p:GetAttribute('FreeReviveUsed')~=true}
 end
 local function show(p,s,id,reason,now,permanent)
  local offer,words=catalog[id],copy[id]
@@ -166,12 +174,12 @@ task.spawn(function()
    local c=context(p,s,now)
    p:SetAttribute('OfferAdvisorContext',not c.safe and 'unsafe'or c.solo and 'solo'or c.social and 'social'or 'party')
    local permanent=Run:IsStudio()and script:GetAttribute('StudioPermanentPrompt')==true
-   if s.policy.active and(not c.mission or not c.safe or c.modal or not ({Searching=true,Returning=true,Selling=true})[c.phase])then hide(p,s)end
+   if s.policy.active and(not c.mission or c.danger or c.modal or not ({Searching=true,Returning=true,Selling=true})[c.phase])then hide(p,s)end
    if Policy.Expire(s.policy,now)then event:FireClient(p,'hide')end
    if Policy.CanShow(s.policy,c,now,permanent)and(not permanent or now>=s.nextPreview)then
     local id,reason=Policy.Select(s.policy,c)
     -- Explicit Studio demo may display a consumable even when test inventory is already stocked.
-    if permanent and not id and not s.policy.declined.revive_token then id,reason='revive_token','studio_preview'end
+    if permanent and not id and not s.policy.declined.revive_pack_3 then id,reason='revive_pack_3','studio_preview'end
     if id then show(p,s,id,reason,now,permanent)end
    end
   end end

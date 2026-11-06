@@ -223,7 +223,7 @@ function V.Paths(plan,mansion)
  end end
  -- Validate unlocked traversal; door slabs are restored even on API failure.
  local doors={};for _,p in ipairs(mansion.Interactive:GetDescendants()) do if p:IsA('BasePart') and p:GetAttribute('DoorSlab') then doors[p]=p.CanCollide;p.CanCollide=false end end
- local workers=4;local done=0
+ local workers=12;local done=0 -- path checks run side by side (4 workers plus a frame wait per path took 2.8 s, 2026-10-22)
  for worker=1,workers do task.spawn(function()
   local path
   local ok,err=pcall(function()
@@ -231,7 +231,7 @@ function V.Paths(plan,mansion)
    for index=worker,#targets,workers do
     local t=targets[index]
     if (Vector3.new(start.X,0,start.Z)-Vector3.new(t.p.X,0,t.p.Z)).Magnitude<.5 and math.abs(start.Y-t.p.Y)<2 then continue end
-    path:ComputeAsync(start,t.p);if path.Status~=Enum.PathStatus.Success then table.insert(errors,'path '..t.name..' '..path.Status.Name) end;task.wait()
+    path:ComputeAsync(start,t.p);if path.Status~=Enum.PathStatus.Success then table.insert(errors,'path '..t.name..' '..path.Status.Name) end
    end
   end)
   if path then path:Destroy() end;if not ok then table.insert(errors,tostring(err)) end;done+=1

@@ -5,7 +5,11 @@ local Run=game:GetService('RunService')
 local DSS=game:GetService('DataStoreService')
 local Http=game:GetService('HttpService')
 local Core=require(script.Parent:WaitForChild('RunSavesCore'))
-local store=DSS:GetDataStore('RunSaves_v1'..(Run:IsStudio()and '_Studio'or ''))
+-- Unpublished review copies never construct external stores; published games keep their existing path.
+local LOCAL_REVIEW=Run:IsStudio()and game.PlaceId==0 and game.GameId==0
+local STUDIO_MEMORY=LOCAL_REVIEW or game:GetService('RunService'):IsStudio()and workspace:GetAttribute('StudioDataStores')~=true -- Studio playtests keep saves in memory: stopping during a DataStore call hangs Studio. Workspace StudioDataStores=true tests real saves
+local store
+if not STUDIO_MEMORY then store=DSS:GetDataStore('RunSaves_v1'..(Run:IsStudio()and '_Studio'or ''))end
 local M={}
 local SERVER_ID=game.JobId~=''and game.JobId or Http:GenerateGUID(false)
 local RESERVATION_SECONDS,LEASE_SECONDS,RENEW_SECONDS=300,180,45
@@ -52,11 +56,11 @@ local function transact(id,op)
   local key=storageKey(id)
   op.ownerUserId=key;op.now=now();if op.actorUserId==id then op.actorUserId=key end
   local ok,value
-  if testId(id)then -- Studio test player: same Core rules, memory instead of the DataStore
+  if STUDIO_MEMORY or testId(id)then -- Same Core rules; unpublished review and synthetic tests are session-only
    ok=true;local nextValue,msg=Core.Apply(testProfile(id),op);message=msg
    if nextValue~=nil then memory[id]=Http:JSONEncode(nextValue)end;value=nextValue
   else
-   ok,value=pcall(function()return store:UpdateAsync(tostring(id),function(old)
+   ok,value=pcall(function()assert(store,'Persistence store is not available');return store:UpdateAsync(tostring(id),function(old)
     local nextValue,msg=Core.Apply(old,op);message=msg;return nextValue
    end,{id})end)
   end
@@ -69,9 +73,9 @@ local function transact(id,op)
 end
 local function read(id)
  if not validId(id)then return nil,'Invalid run owner.'end
- if testId(id)then return Core.Reconcile(testProfile(id))end
+ if STUDIO_MEMORY or testId(id)then return Core.Reconcile(testProfile(id))end
  local options=Instance.new('DataStoreGetOptions');options.UseCache=false
- local ok,value=pcall(function()return store:GetAsync(tostring(id),options)end)
+ local ok,value=pcall(function()assert(store,'Persistence store is not available');return store:GetAsync(tostring(id),options)end)
  if not ok then return nil,'Run-save storage is unavailable. Please try again.'end
  return Core.Reconcile(value)
 end
@@ -192,7 +196,7 @@ function M.FailChance(failId)
  if not ok then return false,msg end
  local kept=d and d.slots[context.slotIndex]
  if kept then
-  local reset=msg~='Already counted.'and(context.slot and context.slot.chances or 3)<=1 -- the last chance just turned it into a new save
+  local reset=msg~='Already counted.'and(context.slot and context.slot.chances or 2)<=1 -- the last chance just turned it into a new save
   context.slot=kept;return true,kept.chances,reset
  end
  finished=true -- the slot is gone; nothing more to write this mission
@@ -379,6 +383,7 @@ function M.DepartMission(p)
 end
 Players.PlayerRemoving:Connect(M.DepartMission)
 game:BindToClose(function()
+ if game:GetService('RunService'):IsStudio() then return end -- Studio stop: close-time saves can hang the server shutdown
  local deadline=os.clock()+25
  if not context or finished then return end
  if not pendingTerminal then local p=Players:GetPlayerByUserId(context.ownerUserId);if p then finishMission(p)end end

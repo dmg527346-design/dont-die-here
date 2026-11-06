@@ -7,6 +7,8 @@ local DANGER_RADIUS=40 -- monster distance where the effect starts
 local FULL_RADIUS=12 -- monster distance for the strongest effect
 local LIGHT_RADIUS=32 -- lights this close to you react
 local RED=Color3.fromRGB(255,30,25)
+local RED_FLASH_RADIUS=45 -- you see the smashed fortune teller's red flash this close to it
+local CAT_CURSE_STRENGTH=.45 -- the whole level flickers red after the stray cat was turned to stone (map attribute CatCurse)
 local lights,base={},{} -- base[light]={brightness,color,enabled,nextFlip,on}
 local cachedMap
 local function rebuild(map)
@@ -42,6 +44,10 @@ Run.RenderStepped:Connect(function(dt)
    end
   end
  end
+ if r and map and map:GetAttribute('CatCurse')==true and player:GetAttribute('MissionActive')==true then strength=math.max(strength,CAT_CURSE_STRENGTH)end
+ -- The fortune teller was smashed (CloseUpChoices): every light near it flashes hard red for a moment.
+ local flashAt=map and map:GetAttribute('RedFlashAt')
+ if r and typeof(flashAt)=='Vector3'and workspace:GetServerTimeNow()<(map:GetAttribute('RedFlashUntil')or 0)and(flashAt-r.Position).Magnitude<RED_FLASH_RADIUS then strength=1 end
  local now=os.clock()
  local active={}
  if strength>0 and r then

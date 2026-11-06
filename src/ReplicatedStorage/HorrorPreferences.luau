@@ -1,5 +1,5 @@
 local P=game:GetService('Players')
-local defaults={MasterVolume=.65,EffectsVolume=.7,MenuMusicVolume=.25,Jumpscares=true,FlashingLights=true,CameraMotion=true,SpitEffects=true,VoiceEffects=true}
+local defaults={MasterVolume=.65,EffectsVolume=.7,MenuMusicVolume=.25,Jumpscares=true,FlashingLights=true,CameraMotion=true,SpitEffects=true,VoiceEffects=true,MobileHighQuality=true}
 -- Only the volume sliders are player-adjustable. These effects are always on; older saved OFF values are ignored.
 local fixed={Jumpscares=true,FlashingLights=true,CameraMotion=true,SpitEffects=true,VoiceEffects=true}
 local M={}

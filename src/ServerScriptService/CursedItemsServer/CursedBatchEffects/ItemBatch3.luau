@@ -21,6 +21,8 @@ local GARLIC_RADIUS=11
 local MUSIC_CALM_RADIUS=30
 local PALE=Color3.fromRGB(222,222,232)
 local VAMPIRE_EYES=Color3.fromRGB(255,25,35)
+-- Super glue: seconds you cannot let go, and the countdown shown above the bottle.
+local GLUE_SECONDS=5
 local fx={}
 
 local function living(p)
@@ -235,7 +237,10 @@ function M.Pickup(p,m)
  elseif id=='PartyPopper'then
   if m.PrimaryPart then burst(m.PrimaryPart);Audio.Play('JarPop',m.PrimaryPart)end;p:SetAttribute('Confettied',true)
  elseif id=='GlueBottle'then
-  m:SetAttribute('GluedUntil',os.clock()+10)
+  local ends=os.clock()+GLUE_SECONDS
+  m:SetAttribute('GluedUntil',ends)
+  -- Server-time end for the countdown CursedItemsClient draws above the bottle each player actually sees.
+  m:SetAttribute('GlueEnds',workspace:GetServerTimeNow()+GLUE_SECONDS)
  elseif id=='CursedPhoto'then
   -- Film is spent on this physical item, not on the holder. Keep it in inventory for sale.
   if m:GetAttribute('CameraSpent')then return end

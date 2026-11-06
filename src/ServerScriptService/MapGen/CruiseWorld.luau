@@ -14,8 +14,8 @@ local TEX = {
 local KEEL, RED_TOP, NAVY_TOP, GOLD_TOP, DECK = -14, -9, -3, -2.75, 31
 local HULL_OFFSET = 2 -- hull plating sits this far outside the outermost interior wall
 local C = {
-	white = Color3.fromRGB(226, 222, 212), navy = Color3.fromRGB(31, 45, 74), red = Color3.fromRGB(122, 38, 34),
-	gold = Color3.fromRGB(201, 165, 74), teak = Color3.fromRGB(120, 80, 48), dark = Color3.fromRGB(26, 28, 34),
+	white = Color3.fromRGB(226, 222, 212), navy = Color3.fromRGB(31, 45, 74), red = Color3.fromRGB(40, 58, 66), -- hull bottom band: slate, not red (red rule, 2026-10-22)
+	gold = Color3.fromRGB(201, 165, 74), teak = Color3.fromRGB(106, 90, 70), dark = Color3.fromRGB(26, 28, 34),
 	lit = Color3.fromRGB(255, 178, 96), glass = Color3.fromRGB(22, 30, 36), teal = Color3.fromRGB(61, 224, 208),
 	pier = Color3.fromRGB(92, 66, 44), piling = Color3.fromRGB(52, 40, 30),
 }
@@ -88,7 +88,8 @@ function M.Surfaces(mansion)
 	for _, p in ipairs(mansion.Architecture:GetDescendants()) do
 		if p:IsA("BasePart") then
 			local s = p:GetAttribute("Surface")
-			if s == "cruisefloor" then texture(p, TEX.carpet, Enum.NormalId.Top, 8, 8); n += 1
+			if s == "cruisefloor" then -- plain navy carpet: the patterned carpet texture was bright red (red rule, 2026-10-21)
+				p.Color = Color3.fromRGB(38, 52, 92); p.Material = Enum.Material.Fabric; p.MaterialVariant = ""; if p:IsA("MeshPart") then p.TextureID = "" end; n += 1
 			elseif s == "cruiseceiling" then texture(p, TEX.ceiling, Enum.NormalId.Bottom, 6, 6); n += 1
 			elseif s == "wallpaper" and p.Transparency < 1 then
 				texture(p, TEX.wall, Enum.NormalId.Front, 6, 7); texture(p, TEX.wall, Enum.NormalId.Back, 6, 7); n += 1
@@ -259,7 +260,7 @@ function M.Exterior(mansion, plan, world, rng)
 		-- the kit funnel is long along its Z (front -Z, raked toward +Z): turn it to run along the ship, raked aft (+X)
 		local f = clone("CruiseFunnel", CFrame.new(fx, DECK + 8.6, cz) * CFrame.Angles(0, -math.pi / 2, 0), deck, fs, fs, fs)
 		if not f then
-			part(deck, "Funnel", Vector3.new(16 * fs, 18 * fs, 10 * fs), CFrame.new(fx, DECK + 8.6 + 9 * fs, cz), Color3.fromRGB(179, 52, 43))
+			part(deck, "Funnel", Vector3.new(16 * fs, 18 * fs, 10 * fs), CFrame.new(fx, DECK + 8.6 + 9 * fs, cz), Color3.fromRGB(58, 74, 96))
 			part(deck, "FunnelTop", Vector3.new(16.2 * fs, 3 * fs, 10.2 * fs), CFrame.new(fx, DECK + 8.6 + 17 * fs, cz), C.dark)
 		end
 		funnelTop = funnelTop or Vector3.new(fx, DECK + 8.6 + 17 * fs, cz)
@@ -267,7 +268,7 @@ function M.Exterior(mansion, plan, world, rng)
 	local mastPos = Vector3.new(hx1 - bowLen * 0.32, DECK, cz)
 	if not clone("CruiseMast", CFrame.new(mastPos), deck, 1, 1, 1) then part(deck, "Mast", Vector3.new(1.2, 26, 1.2), CFrame.new(mastPos + Vector3.new(0, 13, 0)), C.white) end
 	part(deck, "Flagstaff", Vector3.new(0.5, 14, 0.5), CFrame.new(hx2 - 2, DECK + 7, cz), C.white)
-	part(deck, "Flag", Vector3.new(5, 3, 0.1), CFrame.new(hx2 + 0.6, DECK + 12.5, cz), Color3.fromRGB(70, 22, 30), Enum.Material.Fabric)
+	part(deck, "Flag", Vector3.new(5, 3, 0.1), CFrame.new(hx2 + 0.6, DECK + 12.5, cz), Color3.fromRGB(40, 60, 90), Enum.Material.Fabric)
 	local function bulbs(a, b, n)
 		for i = 0, n do
 			local p = a:Lerp(b, i / n) - Vector3.new(0, math.sin(math.pi * i / n) * 2.5, 0)
@@ -332,7 +333,7 @@ function M.Pier(world, info, rng)
 	local f = Instance.new("Model"); f.Name = "Pier"; f.Parent = world
 	local ex = info.ex
 	local ey = 0.35 -- deck top 0.3: just under the van floor (0.45), about level with the L0 floor (0), no step up
-	local zA, zB = info.maxZ + 0.7, info.exteriorZ + 12 + 25 + 29 + 1
+	local zA, zB = info.maxZ, info.exteriorZ + 12 + 25 + 29 + 1
 	local deckY = ey - 0.55 -- under the courtyard apron (top at ey-0.05)
 	local deckPart = part(f, "PierDeck", Vector3.new(40, 1, zB - zA), CFrame.new(ex, deckY, (zA + zB) / 2), C.pier, Enum.Material.WoodPlanks, true)
 	deckPart.CastShadow = true
@@ -578,13 +579,13 @@ function M.Guide(world, info, docks)
 				if q:IsA("BasePart") then q.CanCollide, q.CanQuery, q.CanTouch = false, false, false end
 			end
 		else
-			host = part(buoys, "Buoy", Vector3.new(3, 3, 3), CFrame.new(p.X, W.Level + 0.5, p.Z), kind == "red" and Color3.fromRGB(190, 40, 40) or (kind == "amber" and Color3.fromRGB(200, 140, 40) or Color3.fromRGB(40, 160, 70)), Enum.Material.SmoothPlastic)
+			host = part(buoys, "Buoy", Vector3.new(3, 3, 3), CFrame.new(p.X, W.Level + 0.5, p.Z), kind == "red" and Color3.fromRGB(222, 218, 206) or (kind == "amber" and Color3.fromRGB(200, 140, 40) or Color3.fromRGB(40, 160, 70)), Enum.Material.SmoothPlastic)
 			host.Shape = Enum.PartType.Ball
 			host:AddTag("CruiseFloat")
 		end
 		if not lit then return end
 		local l = Instance.new("PointLight"); l.Range = 12; l.Brightness = 1.5
-		l.Color = kind == "red" and Color3.fromRGB(255, 70, 60) or Color3.fromRGB(80, 255, 120)
+		l.Color = kind == "red" and Color3.fromRGB(255, 236, 214) or Color3.fromRGB(80, 255, 120)
 		l.Parent = host
 	end
 	-- channel buoys on the open-water side of the loop

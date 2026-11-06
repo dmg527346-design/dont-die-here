@@ -1,3 +1,6 @@
+-- VR-only version of the existing owner. Original source remains untouched.
+return function(script, VRSupport)
+local SelectedPresentation=require(game.ReplicatedStorage:WaitForChild('SelectedItemPresentation'))
 local InputHints=require(game:GetService('ReplicatedStorage'):WaitForChild('InputHints'))
 local Preferences=require(game.ReplicatedStorage:WaitForChild('HorrorPreferences'))
 local Players=game:GetService('Players')
@@ -30,11 +33,13 @@ local function itemModels()
  local list={}
  local map=workspace:FindFirstChild('Mansion');local interactive=map and map:FindFirstChild('Interactive')
  local current=RS:FindFirstChild('LobbyState')
- if (not current or current:GetAttribute('Mode')~='Menu') and interactive then for _,m in ipairs(interactive:GetChildren())do table.insert(list,m)end end
+ if (not current or current:GetAttribute('Mode')~='Menu' or p:GetAttribute('MissionActive')==true) and interactive then for _,m in ipairs(interactive:GetChildren())do table.insert(list,m)end end
  local state=RS:FindFirstChild('LobbyState');local world=workspace:FindFirstChild('LobbyWorld');local toys=world and world:FindFirstChild('Toys');local runtime=toys and toys:FindFirstChild('RuntimeToys')
  if state and state:GetAttribute('Mode')=='Menu' and runtime then for _,m in ipairs(runtime:GetChildren())do if m:GetAttribute('LobbyToy')==true then table.insert(list,m)end end end
  return list
 end
+local PickupFeedback=require(script:WaitForChild('PickupFeedback'))
+local inventoryReady=false
 local held={};local noticeUntil=0;local notice='';local valuables=0
 local shoeTugUntil=0;local shoeTugTarget
 local gui=Instance.new('ScreenGui');gui.ScreenInsets=Enum.ScreenInsets.CoreUISafeInsets;gui.Name='CursedHud';gui.ResetOnSpawn=false;gui.Parent=p:WaitForChild('PlayerGui')
@@ -59,7 +64,12 @@ local function audio(pos,text)
 end
 local alarmSounds=setmetatable({},{__mode='k'})
 e.OnClientEvent:Connect(function(action,a,b,c)
- if action=='inventory' then if #held>0 and #a==#held and a[1] and held[1].model~=a[1].model then GameplayAudio.Play('ClothHandle')end;held=a;valuables=b or 0
+ if action=='inventory' then
+  if inventoryReady then local previous={};for _,entry in held do previous[entry.model]=true end
+   for _,entry in a do if entry.model and not previous[entry.model]then PickupFeedback.Burst(entry.model)end end
+  end
+  inventoryReady=true
+  if #held>0 and #a==#held and a[1] and held[1].model~=a[1].model then GameplayAudio.Play('ClothHandle')end;held=a;valuables=b or 0
  elseif action=='notice' then notice=a;noticeUntil=os.clock()+6;if a:find('hands are full') or a:find('will not let go') or a:find('Need ') then GameplayAudio.Play('UiError')end
  elseif action=='apparition' then GameplayAudio.Play('MonsterSearch',a);local x=temporaryPart('FalseFigure',a+Vector3.new(0,2,0),Vector3.new(1.7,4.5,.6),Color3.fromRGB(15,12,18),1.3);x.Transparency=.25
  elseif action=='frosting' then local x=temporaryPart('FrostingTrail',a-Vector3.new(0,2.9,0),Vector3.new(.7,.035,.9),Color3.fromRGB(203,123,151),18);x.Transparency=.2
@@ -84,6 +94,9 @@ e.OnClientEvent:Connect(function(action,a,b,c)
 end)
 e:FireServer('sync')
 local function carryView(camera)
+ return VRSupport.Head()
+end
+local function legacyCarryView(camera)
  local state=RS:FindFirstChild('LobbyState');local head=p.Character and p.Character:FindFirstChild('Head')
  if p:GetAttribute('MissionActive')~=true and p:GetAttribute('LobbyReady')==true and state and state:GetAttribute('Mode')=='Menu' and head then
   local direction=camera.CFrame.LookVector
@@ -93,11 +106,12 @@ local function carryView(camera)
  return camera.CFrame
 end
 local elapsed=0
+local labelText,labelAlpha='',0 -- the carry / notice line fades instead of blinking on and off
 Run.RenderStepped:Connect(function(dt)
  local camera=workspace.CurrentCamera;if not camera then return end;elapsed+=dt;if elapsed>1/60 and #held>0 then elapsed=0;e:FireServer('aim',carryView(camera)) end
  local active=held[1];local text=''
  if active and active.model.Parent then
-  text=active.name..'  ['..#held..' items]'..(active.model:GetAttribute('LobbyToy')==true and '' or '  Loot '..valuables)
+  text='' -- no item name, item count or loot total here: the hold / drop prompt already names it (owner, 2026-10-22)
   local id=active.id;local m=active.model
   if id=='Compass' or id=='Portrait' then local target=m:GetAttribute('PointerTarget');if target then local localDir=camera.CFrame:VectorToObjectSpace(target-camera.CFrame.Position);text..='   '..(math.abs(localDir.X)<5 and 'AHEAD' or localDir.X>0 and 'RIGHT' or 'LEFT')..(m:GetAttribute('NeedleShake') and ' - needle shaking' or '') end
   elseif id=='Clock' then text..=(m:GetAttribute('ClockBroken')and '   SMASHED - SILENT' or '   A fall from height smashes and silences it')
@@ -105,7 +119,10 @@ Run.RenderStepped:Connect(function(dt)
   elseif id=='Jawbone' and m:GetAttribute('SecretNear') then text..='   SECRET NEARBY' end
 
  end
- if os.clock()<noticeUntil then text=notice..'\n'..text end;label.Text=text
+ text=text:match('^%s*(.-)%s*$') or ''
+ if os.clock()<noticeUntil then text=text~='' and notice..'\n'..text or notice end
+ if text~='' then labelText=text;labelAlpha+=(1-labelAlpha)*math.min(1,dt*14) else labelAlpha-=labelAlpha*math.min(1,dt*7) end
+ label.Text=labelAlpha>.01 and labelText or '';label.TextTransparency=1-labelAlpha
  local obscure=p:GetAttribute('TeddyObscure') or 0;shade.BackgroundTransparency=1-obscure*.7
  local reveal=false;for _,item in ipairs(held) do if (item.id=='Flashlight' or item.id=='Candles' or item.id=='Lantern') and item.model:GetAttribute('SecretLight') then reveal=true end end
  local bridge=map:FindFirstChild('HiddenBridge');if bridge then for _,tile in ipairs(bridge:GetChildren()) do tile.Transparency=reveal and .3 or 1 end end
@@ -137,7 +154,9 @@ Run.RenderStepped:Connect(function(dt)
  local r=char and char:FindFirstChild('HumanoidRootPart')
  if r and h and not r.Anchored and now<shoeTugUntil and shoeTugTarget then local d=shoeTugTarget-r.Position;d=Vector3.new(d.X,0,d.Z);if d.Magnitude>.5 then h:Move(d.Unit,false);local v=r.AssemblyLinearVelocity;local pull=d.Unit*8;r.AssemblyLinearVelocity=Vector3.new(pull.X,v.Y,pull.Z) end end
  if h and (p:GetAttribute('DancingUntil') or 0)>workspace:GetServerTimeNow() then h:Move(Vector3.new(math.sin(now*5),0,math.cos(now*5)),false) end
- if char then for _,x in ipairs(char:GetDescendants()) do if x:IsA('Sound') and x.Name=='Running' then if footstepVolumes[x]==nil then footstepVolumes[x]=x.Volume end;x.Volume=p:GetAttribute('QuietSteps') and footstepVolumes[x]*.08 or footstepVolumes[x] end end end
+ -- Roblox's built-in Running sound stays silent: GameplaySoundClient plays the real footsteps (and handles QuietSteps).
+ -- This used to restore its volume every frame while GameplaySoundClient muted it, so it flickered under the steps.
+ if char then for _,x in ipairs(char:GetDescendants()) do if x:IsA('Sound') and x.Name=='Running' and x.Volume~=0 then x.Volume=0 end end end
  for _,q in ipairs(Players:GetPlayers()) do
   if q~=p and q.Character then
    local active=q:GetAttribute('BorrowedFaceActive');local ghost=disguises[q]
@@ -187,29 +206,73 @@ end)
 
 -- Carry uses the real replicated spring assembly; no hand-locked visual copy.
 
--- Nearby loot receives an occluded outline and a small readable value label.
+-- Nearby loot receives an occluded outline and a readable value label.
+-- Highlight has no thickness setting, so items in tag range also get a second outline on a slightly
+-- grown copy (client only, nearly invisible, under the camera): two lines side by side read as one thick
+-- outline. Each piece grows by a fixed amount sized from the camera distance so the gap stays ~3 px.
 local lootHints={};local hintTimer=0
+local SHELL_RANGE=28
+local shellFolder=Instance.new('Folder');shellFolder.Name='LootOutlineShells';shellFolder.Parent=workspace.CurrentCamera
+local function makeShell(m)
+ local ok,shell=pcall(function()return m:Clone()end)
+ if not ok or not shell then return false end
+ for k in shell:GetAttributes()do shell:SetAttribute(k,nil)end
+ for _,d in shell:GetDescendants()do
+  if d:IsA('BasePart')then d.Anchored=true;d.CanCollide=false;d.CanQuery=false;d.CanTouch=false;d.CastShadow=false;d.Transparency=d.Transparency>=.99 and 1 or .99 -- invisible helper boxes (ItemRoot, ItemGroundCollider) stay invisible and out of the outline
+  elseif not(d:IsA('DataModelMesh')or d:IsA('Model')or d:IsA('Folder'))then d:Destroy()end
+ end
+ if not shell.PrimaryPart then shell:Destroy();return false end
+ local parts={}
+ for _,d in shell:GetDescendants()do if d:IsA('BasePart')then local mesh=d:FindFirstChildWhichIsA('SpecialMesh');table.insert(parts,{part=d,size=d.Size,mesh=mesh,meshScale=mesh and mesh.Scale})end end
+ local h=Instance.new('Highlight');h.Name='LootOutlineShell';h.Adornee=shell;h.DepthMode=Enum.HighlightDepthMode.Occluded;h.FillTransparency=1;h.OutlineTransparency=0;h.OutlineColor=Color3.fromRGB(222,193,124);h.Enabled=false;h.Parent=shell
+ shell.Parent=shellFolder
+ return {model=shell,highlight=h,parts=parts,extra=0}
+end
+local function growShell(s,extra)
+ if math.abs(extra-s.extra)<=s.extra*.15 then return end
+ s.extra=extra
+ for _,r in s.parts do
+  local size=r.size+Vector3.one*(2*extra);r.part.Size=size
+  if r.mesh then r.mesh.Scale=r.meshScale*(size/r.size)end
+ end
+end
 Run.RenderStepped:Connect(function(dt)
  hintTimer+=dt;if hintTimer<.2 then return end;hintTimer=0
  local cam=workspace.CurrentCamera;if not cam then return end
  for _,m in ipairs(itemModels()) do if m:IsA('Model') and m.PrimaryPart and m:GetAttribute('ItemId') then
   local hint=lootHints[m]
   if not hint then
-   local h=Instance.new('Highlight');h.Name='LootOutline';h.Adornee=m;h.DepthMode=Enum.HighlightDepthMode.Occluded;h.FillTransparency=.96;h.OutlineTransparency=.25;h.FillColor=Color3.fromRGB(222,193,124);h.OutlineColor=h.FillColor;h.Parent=m
-   local g=Instance.new('BillboardGui');g.Name='LootValueHint';g.Adornee=m.PrimaryPart;g.Size=UDim2.fromOffset(190,40);g.StudsOffsetWorldSpace=Vector3.new(0,m.PrimaryPart.Size.Y/2+.6,0);g.AlwaysOnTop=false;g.MaxDistance=25;g.Parent=m
-   local t=Instance.new('TextLabel');t.Size=UDim2.fromScale(1,1);t.BackgroundTransparency=1;t.Font=Enum.Font.GothamMedium;t.TextSize=13;t.TextColor3=Color3.fromRGB(236,217,176);t.TextStrokeTransparency=.8;t.Parent=g
-   hint={highlight=h,label=g,text=t};lootHints[m]=hint
+   local h=Instance.new('Highlight');h.Name='LootOutline';h.Adornee=m;h.DepthMode=Enum.HighlightDepthMode.Occluded;h.FillTransparency=.88;h.OutlineTransparency=0;h.FillColor=Color3.fromRGB(222,193,124);h.OutlineColor=h.FillColor;h.Parent=m
+   local g=Instance.new('BillboardGui');g.Name='LootValueHint';g.Adornee=m.PrimaryPart;g.Size=UDim2.fromOffset(260,58);g.SizeOffset=Vector2.new(0,.5);g.StudsOffsetWorldSpace=Vector3.new(0,m.PrimaryPart.Size.Y/2+.5,0);g.AlwaysOnTop=false;g.MaxDistance=40;g.Parent=m
+   local t=Instance.new('TextLabel');t.Size=UDim2.fromScale(1,1);t.BackgroundTransparency=1;t.Font=Enum.Font.GothamBold;t.TextSize=19;t.TextColor3=Color3.fromRGB(236,217,176);t.TextStrokeTransparency=.35;t.Parent=g
+   hint={highlight=h,label=g,text=t,lastHeld=m:GetAttribute('HeldBy')};lootHints[m]=hint
+   hint.pickupConnection=m:GetAttributeChangedSignal('HeldBy'):Connect(function()
+    local owner=m:GetAttribute('HeldBy');local previous=hint.lastHeld;hint.lastHeld=owner
+    if owner~=nil and owner~=previous and owner~=p.UserId then PickupFeedback.Burst(m)end
+   end)
   end
-  local distance=(cam.CFrame.Position-m.PrimaryPart.Position).Magnitude;local visible=(not m:GetAttribute('HeldBy') or m:GetAttribute('ItemId')=='GiftCard') and not m:GetAttribute('FaceOwner') and distance<25
+  local distance=(cam.CFrame.Position-m.PrimaryPart.Position).Magnitude;local visible=(not m:GetAttribute('HeldBy') or m:GetAttribute('ItemId')=='GiftCard') and not m:GetAttribute('FaceOwner') and distance<40 -- outline range (was 25)
   local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude;params.FilterDescendantsInstances={m,p.Character,cam};local ray=workspace:Raycast(cam.CFrame.Position,m.PrimaryPart.Position-cam.CFrame.Position,params)
   if ray and ray.Distance+.8<distance then local model=ray.Instance:FindFirstAncestorOfClass('Model');visible=visible and m:GetAttribute('CargoStored')==true and model~=nil and (model:GetAttribute('Kind')=='cart' or model:GetAttribute('Kind')=='boat') end
-  hint.highlight.Enabled=visible and not m:GetAttribute('CargoStored');hint.label.Enabled=visible and distance<16
+  hint.highlight.Enabled=visible and not m:GetAttribute('CargoStored');hint.label.Enabled=visible and distance<28 -- name tag range (was 16)
+  local wantShell=visible and not m:GetAttribute('CargoStored') and distance<SHELL_RANGE
+  if wantShell and hint.shell==nil then hint.shell=makeShell(m) end
+  if hint.shell then
+   hint.shell.highlight.Enabled=wantShell;hint.shell.model.Parent=wantShell and shellFolder or nil -- a hidden shell stops following its item: never leave it standing at the old spot
+   if wantShell then local pixelsPerStud=cam.ViewportSize.Y/(2*math.max(distance,1)*math.tan(math.rad(cam.FieldOfView)/2));growShell(hint.shell,math.max(2,cam.ViewportSize.Y/320)/pixelsPerStud)end
+  end
   hint.text.Text=(m:GetAttribute('DisplayName') or 'Loot')..((m:GetAttribute('Gear') or m:GetAttribute('LobbyToy')==true) and '' or '\n$'..(m:GetAttribute('Value') or 0)) -- bought gear is a tool, not loot: no price
  end end
- for m,hint in pairs(lootHints) do if not m.Parent then if hint.highlight.Parent then hint.highlight:Destroy() end;if hint.label.Parent then hint.label:Destroy() end;lootHints[m]=nil end end
+ for m,hint in pairs(lootHints) do if not m.Parent then if hint.pickupConnection then hint.pickupConnection:Disconnect()end;if hint.highlight.Parent then hint.highlight:Destroy() end;if hint.label.Parent then hint.label:Destroy() end;if hint.shell then hint.shell.model:Destroy() end;lootHints[m]=nil end end
+end)
+-- Shells follow their item every frame while shown (items get pushed, carted and dropped).
+Run.RenderStepped:Connect(function()
+ for m,hint in pairs(lootHints)do local s=hint.shell
+  if s and s.highlight.Enabled and m.Parent then s.model:PivotTo(m:GetPivot())end
+ end
 end)
 local function sendCarryMode()
- e:FireServer('carryMode',InputHints.Get()=='touch')
+ e:FireServer('carryMode',true)
 end
 InputHints.Changed:Connect(sendCarryMode);sendCarryMode()
 
@@ -298,12 +361,21 @@ local function makeVisual(m)
  local root=m.PrimaryPart
  return {copy=copy,pairs=pairs_,pos=root.Position,vel=Vector3.zero,rot=root.CFrame.Rotation}
 end
+-- On drop the local copy is not deleted at once: it blends into wherever the real (server) item is over DROP_BLEND
+-- seconds, so letting go never shows a jump. Re-grabbing during the blend cancels it.
+local DROP_BLEND=.04
+local fading={}
 local function dropVisual(m)
  local v=visuals[m];visuals[m]=nil
+ if v and m.Parent and m.PrimaryPart then
+  local from={};for _,pair in v.pairs do if pair.copy.Parent then from[pair]=pair.copy.CFrame end end
+  fading[m]={copy=v.copy,from=from,t=0};return
+ end
  if v then v.copy:Destroy() end
  if m.Parent then hideReal(m,false) end
 end
 Run:BindToRenderStep('CursedHoldVisual',Enum.RenderPriority.Camera.Value+5,function(dt)
+ SelectedPresentation.Update()
  dt=math.min(dt,1/30)
  local camera=workspace.CurrentCamera;local character=p.Character;local r=character and character:FindFirstChild('HumanoidRootPart')
  local mine={}
@@ -312,6 +384,16 @@ Run:BindToRenderStep('CursedHoldVisual',Enum.RenderPriority.Camera.Value+5,funct
   if m and m.Parent and m.PrimaryPart and m:GetAttribute('HeldBy')==p.UserId and not m:GetAttribute('FaceOwner') and not m:GetAttribute('ItemWearOwner') then mine[m]=i end
  end end
  for m in visuals do if not mine[m] then dropVisual(m) end end
+ for m,f in fading do
+  if mine[m] or not m.Parent then
+   f.copy:Destroy();fading[m]=nil
+   if m.Parent and not mine[m] then hideReal(m,false) end
+  else
+   f.t+=dt/DROP_BLEND;local a=math.min(1,f.t);a=a*a*(3-2*a)
+   for pair,from in f.from do if pair.real.Parent and pair.copy.Parent then pair.copy.CFrame=from:Lerp(pair.real.CFrame,a) end end
+   if f.t>=1 then f.copy:Destroy();fading[m]=nil;hideReal(m,false) end
+  end
+ end
  if not next(mine) then return end
  local now=os.clock()
  if now>=doorsAt then
@@ -321,7 +403,7 @@ Run:BindToRenderStep('CursedHoldVisual',Enum.RenderPriority.Camera.Value+5,funct
  local blockers={p:GetAttribute('MissionActive')==true and map.Collision or workspace:FindFirstChild('LobbyWorld')};local camp=workspace:FindFirstChild('RecoveryCamp');if camp then table.insert(blockers,camp) end
  for _,d in doors do table.insert(blockers,d) end
  holdRay.FilterDescendantsInstances=blockers
- local cam=carryView(camera);local touch=p:GetAttribute('TouchCarry')
+ local cam=carryView(camera);local touch=true
  local w,z=VISUAL_FREQUENCY,VISUAL_DAMPING
  for m,i in mine do
   local v=visuals[m];if not v then v=makeVisual(m);visuals[m]=v end
@@ -330,15 +412,21 @@ Run:BindToRenderStep('CursedHoldVisual',Enum.RenderPriority.Camera.Value+5,funct
   if m:GetAttribute('ItemId')=='Mirror' and not touch then pose=cam*CFrame.new(0,.55,-holdDistance)*CFrame.Angles(0,math.pi,0) end
   -- Hand mirror: glass toward the holder, close enough that the reflection shows what is behind them.
   if m:GetAttribute('ItemId')=='FearMirror' and not touch then pose=cam*CFrame.new(0,-.45,-2.6)*CFrame.Angles(0,math.pi,0) end
+  if m:GetAttribute('ItemId')=='BackwardsHairdryer'then pose=pose*CFrame.Angles(0,math.pi,0)end
+  -- Desktop draft items use the same centered pose as other pickups; touch keeps its hand pose above.
   local goal=i==1 and pose.Position or r.Position-r.CFrame.RightVector*1.4+Vector3.new(0,-.3,0)
   if m:GetAttribute('ItemId')=='Balloon' then pose=CFrame.new(r.Position+Vector3.new(0,4.5,0))*r.CFrame.Rotation;goal=pose.Position end
   local hit=workspace:Raycast(r.Position+Vector3.new(0,1,0),goal-r.Position-Vector3.new(0,1,0),holdRay)
   if hit then goal=hit.Position-hit.Normal*.1+hit.Normal*math.max(.65,m.PrimaryPart.Size.Magnitude*.25) end
-  -- Damped spring toward the hold point; snap if far (respawn, teleport).
-  if (goal-v.pos).Magnitude>SNAP_DISTANCE then v.pos=goal;v.vel=Vector3.zero end
-  v.vel+=((goal-v.pos)*w*w-v.vel*2*z*w)*dt
-  v.pos+=v.vel*dt
-  v.rot=v.rot:Lerp(pose.Rotation,1-math.exp(-VISUAL_TURN*dt))
+  -- Phones / tablets (TouchCarry): the item sits in the on-screen hand every frame, no spring lag.
+  -- Mouse and keyboard keep the damped spring toward the hold point (and its swing); snap if far (respawn, teleport).
+  if touch then v.pos=goal;v.vel=Vector3.zero;v.rot=pose.Rotation
+  else
+   if (goal-v.pos).Magnitude>SNAP_DISTANCE then v.pos=goal;v.vel=Vector3.zero end
+   v.vel+=((goal-v.pos)*w*w-v.vel*2*z*w)*dt
+   v.pos+=v.vel*dt
+   v.rot=v.rot:Lerp(pose.Rotation,1-math.exp(-VISUAL_TURN*dt))
+  end
   -- Swing: the item tilts against its lag, relative to the view.
   local lag=cam:VectorToObjectSpace(v.vel)
   local swing=CFrame.fromAxisAngle(cam.RightVector,math.clamp(-lag.Y*SWING_TILT,-SWING_MAX,SWING_MAX))*CFrame.fromAxisAngle(cam.LookVector,math.clamp(lag.X*SWING_TILT,-SWING_MAX,SWING_MAX))
@@ -346,10 +434,12 @@ Run:BindToRenderStep('CursedHoldVisual',Enum.RenderPriority.Camera.Value+5,funct
   -- Every visible part follows its offset on the real item, so animations still show.
   local realRoot=m.PrimaryPart.CFrame
   for _,pair in v.pairs do
-   if pair.real.Parent then pair.copy.CFrame=rootCF*realRoot:ToObjectSpace(pair.real.CFrame);pair.copy.Transparency=pair.real.Transparency end
+   if pair.real.Parent then pair.copy.CFrame=rootCF*realRoot:ToObjectSpace(pair.real.CFrame);pair.copy.Transparency=pair.real.Transparency;if m:GetAttribute('SelectedItem')then pair.copy.Size=pair.real.Size end end
   end
  end
 end)
 
 
 
+
+end

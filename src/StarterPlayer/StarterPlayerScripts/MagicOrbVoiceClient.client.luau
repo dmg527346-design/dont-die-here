@@ -40,7 +40,7 @@ Run.Heartbeat:Connect(function(dt)
   local helium=alive and now<(r.player:GetAttribute('HeliumUntil')or 0)
   local kazoo=alive and now<(r.player:GetAttribute('KazooUntil')or 0)
   -- Helium squeaks (high), the magic orb growls (low), the kazoo buzzes slightly high.
-  local pitch=helium and 1.75 or orb and .72 or kazoo and 1.12 or 1
+  local pitch=helium and 1.75 or orb and .72 or kazoo and 1.12 or(alive and r.player:GetAttribute('OmenShrunk')and 1.4)or 1 -- TEENY TINY omen: squeaky
   r.effect.Pitch=pitch;r.effect.Bypass=pitch==1
   r.buzz.Bypass=not kazoo
   r.muffle.Bypass=not(alive and now<(r.player:GetAttribute('MascotMuffleUntil')or 0))

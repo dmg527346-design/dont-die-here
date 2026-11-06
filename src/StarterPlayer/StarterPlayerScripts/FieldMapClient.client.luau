@@ -179,7 +179,16 @@ folders()
 local seen,blips={}, {}
 local function itemStyle(m)
  local k=m:GetAttribute('Kind')
- if k=='key' then return KEY_COLOR,9 elseif k=='pickup' then return ITEM_COLOR,8 elseif k=='cart' then return CART_COLOR,12 end
+ if k=='key' then return KEY_COLOR,9 elseif k=='pickup' then return ITEM_COLOR,8 end -- the cart has its own marker below
+end
+-- The team's cart nearest to `from` (the one this player is most likely looking for).
+local function nearestCart(from)
+ if not interactive then return nil end
+ local best,bestD=nil,math.huge
+ for _,m in interactive:GetChildren() do
+  if m:GetAttribute('Kind')=='cart' and m.PrimaryPart and workspace:GetServerTimeNow()>=(m:GetAttribute('FogLostUntil')or 0) then local d=(m.PrimaryPart.Position-from).Magnitude;if d<bestD then best,bestD=m,d end end
+ end
+ return best
 end
 local sight=RaycastParams.new();sight.FilterType=Enum.RaycastFilterType.Include;sight.RespectCanCollide=false
 local function scan()
@@ -215,6 +224,17 @@ local function dot(color,size)
  local f=frame(overlay,{AnchorPoint=mid,Size=UDim2.fromOffset(size,size),BackgroundColor3=color,ZIndex=4,Visible=false});round(f);stroke(f,Color3.new(0,0,0),1,.4);return f
 end
 Players.PlayerRemoving:Connect(function(p) if mates[p] then mates[p]:Destroy();mates[p]=nil end end)
+-- Cart marker (owner 2026-10-25: scared players lose the cart): always on the map, big, pulsing and named. Off the
+-- scope or on another floor it waits on the rim, pointing the way, with the distance and UP / DOWN.
+local CART_MARK_PX,CART_RIM_INSET,CART_PULSE_SECONDS=22,18,1.2
+local CART_TAG_INSET=58 -- px from a rim marker toward the scope centre for its tag
+local cartMark=frame(overlay,{AnchorPoint=mid,Size=UDim2.fromOffset(CART_MARK_PX+24,CART_MARK_PX+24),BackgroundTransparency=1,ZIndex=7,Visible=false})
+local cartPulse=frame(cartMark,{AnchorPoint=mid,Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(CART_MARK_PX,CART_MARK_PX),BackgroundTransparency=1,ZIndex=7});round(cartPulse)
+local cartPulseRing=stroke(cartPulse,CART_COLOR,3,0)
+local cartBody=frame(cartMark,{AnchorPoint=mid,Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(CART_MARK_PX,CART_MARK_PX*.78),BackgroundColor3=CART_COLOR,ZIndex=8})
+do local c=Instance.new('UICorner');c.CornerRadius=UDim.new(0,5);c.Parent=cartBody end;stroke(cartBody,INK,2,0)
+local cartArrow=text(cartMark,{AnchorPoint=mid,Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(20,20),Text='\u{25B2}',TextSize=18,TextColor3=CART_COLOR,ZIndex=9,Visible=false})
+local cartTag=text(overlay,{AnchorPoint=Vector2.new(.5,0),Size=UDim2.fromOffset(140,18),Text='CART',TextSize=15,TextColor3=CART_COLOR,ZIndex=9,Visible=false})
 
 -- Holding ---------------------------------------------------------------------------
 local holding={}
@@ -223,7 +243,7 @@ local function canOpen()
  local c=player.Character;local hum=c and c:FindFirstChildOfClass('Humanoid')
  local panel=player:GetAttribute('VanShopOpen') or player:GetAttribute('AdminPassPanelOpen') or player:GetAttribute('AppearanceOpen')
  return hum~=nil and hum.Health>0 and player:GetAttribute('MissionActive')==true and not player:GetAttribute('RoundDead')
-  and not player:GetAttribute('Hiding') and not player:GetAttribute('MonsterJumpscareActive') and not panel and not GuiService.MenuIsOpen
+  and not player:GetAttribute('Hiding') and not player:GetAttribute('MonsterJumpscareActive') and not panel and not GuiService.MenuIsOpen and workspace:GetServerTimeNow()>=(player:GetAttribute('MapErasedUntil')or 0)
 end
 local function apply()
  local want=next(holding)~=nil and canOpen()
@@ -276,7 +296,7 @@ local function layout()
  local small=cam.ViewportSize.Y<500;local side=small and TOUCH_SIDE_SMALL or TOUCH_SIDE
  button.Size=UDim2.fromOffset(side,side)
  -- small screens: above the flashlight indicator (which sits at 62% height), clear of the thumbstick
- button.Position=UDim2.new(0,22,1,small and -230 or -356)
+ button.Position=UDim2.new(0,22,1,small and -230 or -470) -- tablets raised (owner 2026-10-26: was -356)
  hint.Position=UDim2.new(0,18,.62,30);hint.Size=UDim2.fromOffset(small and 186 or 218,28)
 end
 workspace.CurrentCamera:GetPropertyChangedSignal('ViewportSize'):Connect(layout);layout()
@@ -355,7 +375,8 @@ RunService:BindToRenderStep('FieldMapView',Enum.RenderPriority.Camera.Value+2,fu
   local p=m.PrimaryPart.Position
   local onFloor=not m:GetAttribute('HeldBy') and not m:GetAttribute('CargoStored') and levelOf(p.Y-.5)==level
   if onFloor then if m:GetAttribute('Kind')=='key' then keys+=1 elseif m:GetAttribute('Kind')=='pickup' then items+=1 end end
-  local shown=onFloor and place(b,p.X,p.Z)
+  -- Owner 2026-10-27: past the first-time tutorial the map shows no loot markers (keys, cart and crew stay)
+  local shown=onFloor and not(m:GetAttribute('Kind')=='pickup' and player:GetAttribute('TutorialDone')==true and not(RunService:IsStudio() and RS:GetAttribute('TutorialPreview')=='first')) and place(b,p.X,p.Z)
   b.Visible=shown
   if shown then
    local bearing=math.atan2(p.X-pos.X,-(p.Z-pos.Z))-heading
@@ -364,6 +385,26 @@ RunService:BindToRenderStep('FieldMapView',Enum.RenderPriority.Camera.Value+2,fu
   end
  end
  counts.Text=('KEYS  %02d\nLOOT  %02d'):format(keys,items)
+ local cart=nearestCart(pos)
+ cartMark.Visible=cart~=nil;cartTag.Visible=cart~=nil
+ if cart then
+  local cp=cart.PrimaryPart.Position;local dx,dz=cp.X-pos.X,cp.Z-pos.Z
+  local sx,sy=px(dx*ch+dz*sh),px(-dx*sh+dz*ch);local r=math.sqrt(sx*sx+sy*sy)
+  local floors=levelOf(cp.Y-.5)-level;local edge=LIMIT-CART_RIM_INSET
+  local onRim=r>edge
+  if onRim then sx,sy=sx/r*edge,sy/r*edge end
+  cartMark.Position=UDim2.new(.5,sx,.5,sy)
+  local away=onRim and math.atan2(sy,sx) or nil
+  -- On the rim the tag sits just inside the marker (toward the centre) so the scope edge never cuts it.
+  if away then cartTag.Position=UDim2.new(.5,sx-math.cos(away)*CART_TAG_INSET,.5,sy-math.sin(away)*CART_TAG_INSET-9) else cartTag.Position=UDim2.new(.5,sx,.5,sy+16) end
+  cartArrow.Visible=away~=nil
+  if away then cartArrow.Rotation=math.deg(away)+90;cartArrow.Position=UDim2.new(.5,math.cos(away)*16,.5,math.sin(away)*16) end
+  local dist=math.floor(math.sqrt(dx*dx+dz*dz)+.5)
+  cartTag.Text='CART'..(onRim and ('  '..dist) or '')..(floors>0 and '  UP' or floors<0 and '  DOWN' or '')
+  cartBody.BackgroundTransparency=floors==0 and 0 or .35
+  local t=(now%CART_PULSE_SECONDS)/CART_PULSE_SECONDS
+  cartPulse.Size=UDim2.fromOffset(CART_MARK_PX+20*t,CART_MARK_PX+20*t);cartPulseRing.Transparency=t
+ end
  -- Crew on this floor.
  for _,p in Players:GetPlayers() do if p~=player then
   local r=p.Character and p.Character:FindFirstChild('HumanoidRootPart')
@@ -374,3 +415,57 @@ RunService:BindToRenderStep('FieldMapView',Enum.RenderPriority.Camera.Value+2,fu
  end end
 end)
 player.CharacterAdded:Connect(function() table.clear(holding);apply() end)
+if RunService:IsStudio() then -- Studio-only: playtests hold the map out the way the M key does
+ local api=Instance.new('BindableFunction');api.Name='FieldMapTestApi';api.Parent=script
+ api.OnInvoke=function(action) if action=='hold' then holding[Enum.KeyCode.M]=true elseif action=='release' then holding[Enum.KeyCode.M]=nil end;apply();return open end
+end
+
+-- Cart beacon (owner 2026-10-25): within CART_BEACON_RADIUS the cart wears an orange outline that shows through walls,
+-- fading in over the last CART_BEACON_FADE studs. Off while this player pushes it and while a tutorial outline is on it.
+local CART_BEACON_RADIUS,CART_BEACON_FADE=80,20 -- was 160 / 40 (owner 2026-10-25: not from anywhere on the map)
+-- Only while a wall is between you and it (owner 2026-10-25: in plain sight the cart looks normal).
+local sightParams=RaycastParams.new();sightParams.FilterType=Enum.RaycastFilterType.Exclude;sightParams.RespectCanCollide=true
+local function hiddenFromView(cart)
+ local cam=workspace.CurrentCamera;if not cam then return false end
+ local skip={cart};for _,q in game:GetService('Players'):GetPlayers()do if q.Character then skip[#skip+1]=q.Character end end
+ local creatures=workspace:FindFirstChild('RoamingCreatures');if creatures then skip[#skip+1]=creatures end
+ sightParams.FilterDescendantsInstances=skip
+ local cf,size=cart:GetBoundingBox();local from=cam.CFrame.Position
+ for _,dy in {.35,-.2}do -- the top and the middle: visible if either can be seen
+  local to=cf.Position+Vector3.new(0,size.Y*dy,0)
+  if not workspace:Raycast(from,to-from,sightParams)then return false end
+ end
+ return true
+end
+-- Lives in the camera, not PlayerGui: a respawn between levels wiped it from PlayerGui, so it never showed after level 1.
+local beacon
+local function ensureBeacon()
+ if beacon and beacon.Parent then return beacon end
+ beacon=Instance.new('Highlight');beacon.Name='CartBeacon';beacon.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+ beacon.OutlineColor=CART_COLOR;beacon.FillColor=CART_COLOR;beacon.FillTransparency=1;beacon.OutlineTransparency=1;beacon.Enabled=false
+ beacon.Parent=workspace.CurrentCamera
+ return beacon
+end
+local function tutorialOutlineOn(cart)
+ for _,name in {'CartGuide','TutorialTargetOutline'} do
+  local h=player.PlayerGui:FindFirstChild(name,true)
+  if h and h:IsA('Highlight') and h.Enabled and h.Adornee==cart and h.OutlineTransparency<.9 then return true end -- a faded-out guide outline must not hide the beacon
+ end
+ return false
+end
+local beaconAt=0
+RunService.Heartbeat:Connect(function()
+ local now=os.clock();if now<beaconAt then return end;beaconAt=now+.1
+ folders()
+ local root=player.Character and player.Character:FindFirstChild('HumanoidRootPart')
+ local playing=root and player:GetAttribute('MissionActive')==true and not player:GetAttribute('RoundDead')
+ local cart=playing and nearestCart(root.Position)
+ local d=cart and (cart.PrimaryPart.Position-root.Position).Magnitude or math.huge
+ ensureBeacon()
+ local on=cart and d<=CART_BEACON_RADIUS and cart:GetAttribute('HeldBy')~=player.UserId and not tutorialOutlineOn(cart)and hiddenFromView(cart)
+ if on then
+  local k=math.clamp((CART_BEACON_RADIUS-d)/CART_BEACON_FADE,0,1)
+  beacon.Adornee=cart;beacon.OutlineTransparency=1-.9*k;beacon.FillTransparency=1-.12*k
+ end
+ beacon.Enabled=on==true
+end)

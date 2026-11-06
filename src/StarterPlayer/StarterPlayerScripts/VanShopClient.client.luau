@@ -68,6 +68,11 @@ end
 local function platform()
  return InputHints.Get()
 end
+-- Phone tiles follow the device, not the last input: a touch screen keeps the compact 3-column grid
+-- even when the input hint flips to mouse/keyboard. A gamepad still gets the big focusable cards.
+local function phoneLayout()
+ return platform()=='touch' or (UIS.TouchEnabled and platform()~='pad')
+end
 -- Anywhere mode: the Robux shop opened from a contextual suggestion, wherever the player is in a mission.
 -- Only Robux purchases happen there; token purchases and USE charges stay at the van terminals.
 local anywhere=false
@@ -108,6 +113,8 @@ end
 local function layout()
  local camera=workspace.CurrentCamera;if not camera then return 1 end
  local v=gui.AbsoluteSize;local w=math.min(MAX_W,v.X-MARGIN*2);local h=math.min(MAX_H,v.Y-MARGIN*2)
+ -- Phones: a smaller panel overall, with small tiles (see phoneTile).
+ if phoneLayout()then w=math.min(w,math.floor(v.X*.84));h=math.min(h,v.Y-8)end
  panel.Size=UDim2.fromOffset(w,h)
  local compact=h<430 or w<560
  local header=compact and HEADER_H_COMPACT or HEADER_H
@@ -120,8 +127,10 @@ local function layout()
  balance.Position=UDim2.new(1,-66,0,compact and 15 or 26);balance.Size=UDim2.fromOffset(0,compact and 30 or 36);balance.TextSize=compact and 14 or 16
  divider.Position=UDim2.fromOffset(SIDE,header-6)
  list.Position=UDim2.fromOffset(SIDE,header+4);list.Size=UDim2.new(1,-SIDE*2+8,1,-(header+4+FOOTER_H))
- local cols=w>=820 and 3 or w>=520 and 2 or 1
- grid.CellSize=UDim2.fromOffset(math.floor((w-SIDE*2-4-(cols-1)*CARD_GAP)/cols),CARD_H)
+ local phone=phoneLayout()
+ local cols=phone and(w>=520 and 3 or 2)or w>=820 and 3 or w>=520 and 2 or 1
+ grid.CellSize=UDim2.fromOffset(math.floor((w-SIDE*2-4-(cols-1)*(phone and 8 or CARD_GAP))/cols),phone and 88 or CARD_H)
+ grid.CellPadding=UDim2.fromOffset(phone and 8 or CARD_GAP,phone and 8 or CARD_GAP)
  grid.FillDirectionMaxCells=cols
  return cols
 end
@@ -131,7 +140,7 @@ local function loadPrice(offer)
  task.spawn(function()
   local ok,info=pcall(function()return Market:GetProductInfoAsync(offer.assetId,offer.kind=='Pass'and Enum.InfoType.GamePass or Enum.InfoType.Product)end)
   prices[offer.id]={amount=ok and info.PriceInRobux or nil,available=ok and info.IsForSale==true}
-  loadingPrice[offer.id]=nil;if open and section=='Robux'then render()end
+  loadingPrice[offer.id]=nil;if open and section=='Robux'then render(offer.id)end -- only this card: every price used to rebuild the whole list
  end)
 end
 local function setHeader()
@@ -141,28 +150,33 @@ local function setHeader()
  headerGlyph.Text=robux and 'R$'or 'T'
  headerGradient.Color=robux and ColorSequence.new(Color3.fromRGB(110,236,140),Color3.fromRGB(28,160,72))or ColorSequence.new(Color3.fromRGB(255,222,110),Color3.fromRGB(226,150,30))
 end
-render=function()
+-- render(onlyId) rebuilds one card (a purchase or a price load) instead of all ~70: a full rebuild hitched badly on
+-- consoles after every purchase (2026-10-24). render(BALANCE_ONLY) just refreshes the balance line.
+local BALANCE_ONLY='__balance__'
+local lastPurchaseAt=0
+render=function(onlyId)
  local cols=layout();local focus=GS.SelectedObject;local focusName=focus and focus:IsDescendantOf(list)and focus.Name
- for _,x in list:GetChildren()do if x:IsA('GuiObject')then x:Destroy()end end
+ if onlyId then local old=list:FindFirstChild('Offer_'..onlyId);if old then old:Destroy()end
+ else for _,x in list:GetChildren()do if x:IsA('GuiObject')then x:Destroy()end end end
  balance.Text='TOKENS  '..(progress.tokens or p:GetAttribute('Tokens')or 0)..'   •   REVIVES  '..(progress.reviveTokens or 0)
  local robux=section=='Robux'
- -- Gameplay upgrades sit in the middle of the token list: half the cosmetics before them, half after.
+ -- Gameplay upgrades (Movement Speed, Stamina Capacity, Flashlight Strength) always lead the token list so they
+ -- are not lost among the cosmetics; everything else follows in catalog order.
  local offers=robux and Shop.RobuxOffers or Shop.TokenOffers
  local order={}
  do
-  local others={};for i,o in offers do if o.kind~='Upgrade'then table.insert(others,i)end end
-  local mid=math.floor(#others/2)
-  for k,i in others do order[i]=k<=mid and k*10 or 1000+k*10 end
-  local u=0;for i,o in offers do if o.kind=='Upgrade'then u+=1;order[i]=mid*10+u end end
+  local u,k=0,0
+  for i,o in offers do if o.kind=='Upgrade'then u+=1;order[i]=u else k+=1;order[i]=100+k end end
  end
  local cells={}
  for index,offer in offers do
+  if onlyId and offer.id~=onlyId then continue end
   local tier=progress.upgrades and progress.upgrades[offer.stat]or 0
   local upgrade=offer.kind=='Upgrade';local maxed=upgrade and tier>=#Shop.UpgradeCosts
   local owned=robux and progress.passes and progress.passes[offer.id]or not robux and progress.owned and progress.owned[offer.id]
   local cosmetic=offer.grants and Shop.ById[offer.grants]or not robux and offer.kind~='Upgrade'and offer
   local equipped=progress.equipped and(offer.id=='vip'and progress.equipped.Title=='title_vip'and progress.equipped.Aura=='aura_vip'or cosmetic and progress.equipped[cosmetic.kind]==cosmetic.id)
-  local cost=upgrade and Shop.UpgradeCosts[tier+1]or offer.price
+  local cost=upgrade and Shop.UpgradeCostFor(offer.stat,tier,p:GetAttribute('ShopTutorialStep'))or offer.price
   local accent=Color3.fromRGB(unpack(offer.color))
   local cell=Instance.new('Frame');cell.Name='Offer_'..offer.id;cell.LayoutOrder=order[index]or index;cell.BackgroundTransparency=1;cell.Parent=list;table.insert(cells,cell)
   local card=Instance.new('Frame');card.Name='Card';card.AnchorPoint=Vector2.new(.5,.5);card.Position=UDim2.fromScale(.5,.5);card.Size=UDim2.fromScale(1,1);card.BackgroundColor3=Color3.new(1,1,1);card.BorderSizePixel=0;card.Parent=cell
@@ -182,7 +196,7 @@ render=function()
   local price=prices[offer.id]
   local priceText=owned and 'OWNED'or maxed and 'MAXED'or robux and(price and(price.amount and('R$ '..price.amount)or 'UNAVAILABLE')or 'LOADING…')or(cost..' TOKENS')
   local use=robux and offer.kind=='Product'and useFor(offer)
-  local charges=use and not anywhere and(p:GetAttribute(use.attribute)or 0)or 0
+  local charges=use and not anywhere and not lobbyMode and(p:GetAttribute(use.attribute)or 0)or 0 -- charges are used in a game, from the van
   -- With a USE button too, the price moves up beside the description so it never gets squeezed out.
   local priceLabel=label(card,'Price',priceText,charges>0 and UDim2.new(0,86,1,-80)or UDim2.new(0,14,1,-48),charges>0 and UDim2.new(1,-98,0,24)or UDim2.new(1,-140,0,38),20,(owned or maxed)and colors.green or colors.gold,UI.Font.Display);priceLabel.TextYAlignment=Enum.TextYAlignment.Center;UI.fit(priceLabel,12,20);UI.outline(priceLabel,1.3)
   if charges>0 then
@@ -210,10 +224,24 @@ render=function()
     local ok=pcall(function()if offer.kind=='Pass'then Market:PromptGamePassPurchase(p,offer.assetId)else Market:PromptProductPurchase(p,offer.assetId)end end)
     if not ok then status.Text='Roblox purchases are unavailable right now.'end
    else
-    status.Text='Saving purchase…'
-    request('purchase',{offer=offer.id},function(data)progress=data.progress;status.Text=data.message;render()end)
+    local function buy()status.Text='Saving purchase…';request('purchase',{offer=offer.id},function(data)progress=data.progress;status.Text=data.message;lastPurchaseAt=os.clock();render(offer.id)end)end
+    -- Short on tokens (owner 2026-10-27): offer the smallest token pack that covers it; the purchase finishes when they arrive.
+    local have=progress.tokens or p:GetAttribute('Tokens')or 0
+    local pack,short
+    if cost and have<cost then pack,short=require(game:GetService('ReplicatedStorage'):WaitForChild('TokenTopUp')).Offer(cost,have,buy)end
+    if pack then status.Text=('You need %d more tokens. The %s pack covers it, and this finishes as soon as they arrive.'):format(short,pack.name)else buy()end
    end
   end,not owned and not maxed)
+  if phoneLayout()then
+   -- Phone tile: small art, name and price on the left, a small button bottom-right; the long description is hidden.
+   badge.Position=UDim2.fromOffset(8,8);badge.Size=UDim2.fromOffset(34,34);symbol.TextSize=12
+   name.Position=UDim2.fromOffset(48,8);name.Size=UDim2.new(1,-54,0,34);name.TextWrapped=true;UI.fit(name,9,14)
+   desc.Visible=false
+   local tag=card:FindFirstChild('EquippedTag');if tag then tag.Position=UDim2.fromOffset(8,46);tag.Size=UDim2.fromOffset(40,14);tag.TextSize=9 end
+   priceLabel.Position=UDim2.new(0,8,1,-34);priceLabel.Size=UDim2.new(1,-84,0,28);UI.fit(priceLabel,9,14)
+   buy.Position=UDim2.new(1,-74,1,-36);buy.Size=UDim2.fromOffset(66,30)
+   local useButton=card:FindFirstChild('Use_'..offer.id);if useButton then useButton.Position=UDim2.new(1,-74,0,8);useButton.Size=UDim2.fromOffset(66,26);priceLabel.Size=UDim2.new(1,-84,0,28)end
+  end
   local function hover(on)Tween:Create(rim,TweenInfo.new(.12),{Transparency=on and 0 or .45,Thickness=on and 2.5 or 1.5}):Play()end
   buy.MouseEnter:Connect(function()hover(true)end);buy.MouseLeave:Connect(function()hover(false)end)
   buy.SelectionGained:Connect(function()hover(true)end);buy.SelectionLost:Connect(function()hover(false)end)
@@ -305,10 +333,10 @@ openPanel=function(data,focusId)
   end
   if focusId then task.delay(SLIDE_IN*.8,function()if open then focusOffer(focusId)end end)end
 end
-PPS.PromptTriggered:Connect(function(prompt,who)if (prompt.Name=='VanTokenShopPrompt'or prompt.Name=='VanRobuxShopPrompt')and(not who or who==p)then show(prompt.Parent)end end)
+PPS.PromptTriggered:Connect(function(prompt,who)if (prompt.Name=='VanTokenShopPrompt'or prompt.Name=='VanRobuxShopPrompt')and(not who or who==p)and InputHints.ConfirmTap()then show(prompt.Parent)end end) -- phones: a real tap, not a camera swipe
 event.OnClientEvent:Connect(function(action,data)
  if action=='response'and pending[data.id]then local callback=pending[data.id];pending[data.id]=nil;if data.ok then callback(data.data)elseif open then status.Text=data.error;Audio.Play('UiError')end
- elseif action=='progress'then progress=data;if open then render()end end
+ elseif action=='progress'then progress=data;if open then render(os.clock()-lastPurchaseAt<2 and BALANCE_ONLY or nil)end end -- the purchase reply already redrew its card
 end)
 CAS:BindActionAtPriority('VanShopClose',function(_,state)
  if not open then return Enum.ContextActionResult.Pass end
@@ -349,5 +377,9 @@ if Run:IsStudio()then local preview=Instance.new('BindableEvent');preview.Name='
 if Run:IsStudio()then
  -- Studio-only: tests close the shop through its real close path.
  local api=Instance.new('BindableFunction');api.Name='LobbyShopTestApi';api.Parent=script
- api.OnInvoke=function(action)if action=='close'then local was=open;if open then close()end;return was end;return false end
+ api.OnInvoke=function(action,terminal)
+  if action=='close'then local was=open;if open then close()end;return was end
+  if action=='openTerminal'and typeof(terminal)=='Instance'then show(terminal);return true end -- the prompt's own open path
+  return false
+ end
 end

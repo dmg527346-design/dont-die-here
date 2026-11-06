@@ -16,8 +16,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- your light (camera space: near the right hand)
 local LIGHT_OFFSET = CFrame.new(0.4, -0.3, 0)
-local INNER_BRIGHTNESS, INNER_ANGLE = 2.2, 50
-local OUTER_BRIGHTNESS, OUTER_ANGLE = .55, 80
+-- Owner 2026-10-25: less glare, more even. Softer hot spot (was 2.2 / 50) and a stronger wide fill (was .55), so what
+-- the beam lands on stays readable instead of washing out to white.
+local INNER_BRIGHTNESS, INNER_ANGLE = 1.45, 58
+local OUTER_BRIGHTNESS, OUTER_ANGLE = .8, 84
 local LIGHT_RANGE = 52
 -- Upgrades buy coverage, not glare: brightness stays almost flat while the cone widens and reaches further.
 -- Roblox caps light Range at 60 studs.
@@ -41,7 +43,7 @@ local KEYS = { [Enum.KeyCode.F] = true, [Enum.KeyCode.ButtonB] = true }
 
 local player = Players.LocalPlayer
 local GuiService=game:GetService('GuiService')
-local on = false
+local on = true -- the flashlight starts ON when a mission begins (user request 2026-10-22); F / B / LIGHT still toggle it
 
 -- own light: a local part (never replicated) moved to the *current* camera each frame
 local lightPart = Instance.new("Part")
@@ -84,20 +86,58 @@ local function safeEmitter(reference,desired)
  local position=reference.Position+delta.Unit*math.max(0,hit.Distance-.12)
  return desired+(position-desired.Position)
 end
+local nearDim=1 -- your own beam's close-to-the-floor dimming (updateNearDim, below)
+-- Dread (LevelAmbienceClient.DreadLayer): a monster close by browns your beam out (FlashlightFlicker 0..1, smooth dips),
+-- an idle scare makes it stutter (FlashlightStutterUntil, 2.5 Hz). Only your own beam; others see theirs as usual.
+local function dreadFactor()
+ local t=os.clock()
+ if t<(player:GetAttribute('FlashlightStutterUntil')or 0)then return math.floor(t*5)%2==0 and .06 or .9 end
+ local f=player:GetAttribute('FlashlightFlicker')or 0
+ if f<=0 then return 1 end
+ local dip=math.clamp((math.noise(t*2.2,.37)-(.32-.3*f))/.12,0,1)
+ return 1-.8*f*dip-.06*f
+end
 local function setLit(l, lit, owner)
 	owner=owner or player
+ -- Sleepy Lamp (CloseUpChoices.ExtraChoices2): NO = the lamp ate this flashlight's light for a while; YES = a big golden beam.
+ local lampT=workspace:GetServerTimeNow()
+ if lampT<(owner:GetAttribute('LampAteLightUntil')or 0)then lit=false end
+ local lampBoost=lampT<(owner:GetAttribute('LampBoostUntil')or 0)
  local tint=owner:GetAttribute('FlashlightColor')
  -- A torch skin (Torch cosmetic slot) warms the beam to match the lamp, unless a Flashlight Colors pick is set.
  local torch=TORCH_TINT[owner:GetAttribute('EquippedTorch') or '']
  l.Color=typeof(tint)=='Color3' and tint or torch or Color3.new(1,1,1)
  -- FlashlightStrength runs 1 (no upgrade) to 4 (max); turn it into 0..1 upgrade progress.
- local upgrade=math.clamp(((owner:GetAttribute('FlashlightStrength')or 1)-1)/3,0,1)
- l.Range=math.clamp(owner:GetAttribute('FlashlightRange')or LIGHT_RANGE,1,MAX_RANGE)
+ -- Flashlight run boost (GearShopServer): each tier adds a quarter of an upgrade's width and 6 studs of reach.
+ local runBoost=owner:GetAttribute('RunBoostFlashlight')or 0
+ local upgrade=math.clamp(((owner:GetAttribute('FlashlightStrength')or 1)-1)/3,0,1)+.25*runBoost
+ l.Range=math.clamp(((owner:GetAttribute('FlashlightRange')or LIGHT_RANGE)+6*runBoost)*(game.ReplicatedStorage:FindFirstChild('RecoveryRound')and game.ReplicatedStorage.RecoveryRound:GetAttribute('Omen')=='DimBatteries'and .75 or 1),1,MAX_RANGE) -- omen DimBatteries: 25% shorter beam
  l.Angle=math.min(170,l:GetAttribute("BaseAngle")*(1+UPGRADE_ANGLE_GAIN*upgrade))
- l.Brightness = lit and l:GetAttribute("OnBrightness")*(1+UPGRADE_BRIGHTNESS_GAIN*upgrade) or 0
+ l.Brightness = lit and l:GetAttribute("OnBrightness")*(1+UPGRADE_BRIGHTNESS_GAIN*upgrade)*(l.Parent==lightPart and nearDim or 1) or 0
+ if lampBoost then l.Range=MAX_RANGE;l.Angle=math.min(170,l.Angle*1.35);l.Brightness*=1.35;l.Color=Color3.fromRGB(255,214,140)end
 end
 local innerLight = makeLight(lightPart, INNER_BRIGHTNESS, INNER_ANGLE, LIGHT_RANGE)
 local outerLight = makeLight(lightPart, OUTER_BRIGHTNESS, OUTER_ANGLE, LIGHT_RANGE)
+-- Up close the beam washes out what lies on the floor (loot, keys): when your own beam lands on the ground,
+-- or on something lying on it, within NEAR_START studs it dims smoothly, down to NEAR_MIN at NEAR_END studs.
+-- Walls and anything at eye height keep the full beam; other players' beams are never dimmed.
+-- Owner 2026-10-25: walls, doors and props up close dim too (down to NEAR_WALL_MIN), not only the floor.
+local NEAR_START,NEAR_END,NEAR_MIN,NEAR_WALL_MIN=12,3,.3,.5
+local nearParams=RaycastParams.new();nearParams.FilterType=Enum.RaycastFilterType.Exclude
+local function updateNearDim(dt)
+ local target=1
+ local character=player.Character;local root=character and character:FindFirstChild('HumanoidRootPart')
+ if on and root then
+  nearParams.FilterDescendantsInstances={character,lightPart}
+  local cf=lightPart.CFrame
+  local hit=workspace:Raycast(cf.Position,cf.LookVector*NEAR_START,nearParams)
+  if hit then
+   local low=hit.Position.Y<root.Position.Y-1.5 and NEAR_MIN or NEAR_WALL_MIN -- below the waist: the floor or something on it
+   target=low+(1-low)*math.clamp((hit.Distance-NEAR_END)/(NEAR_START-NEAR_END),0,1)
+  end
+ end
+ nearDim+=(target-nearDim)*math.min(1,dt*10)
+end
 
 -- HUD
 local gui = Instance.new("ScreenGui")
@@ -174,6 +214,7 @@ end)
 touchButton.Activated:Connect(toggle)
 InputHints.Changed:Connect(refresh)
 refresh()
+tellServer() -- other players see the beam that starts on
 
 -- a new character keeps your choice; the server learns it again once the character exists
 player.CharacterAdded:Connect(function() tellServer();refresh()end)
@@ -210,11 +251,17 @@ Players.PlayerRemoving:Connect(function(p)
 	beams[p] = nil
 end)
 
-RunService:BindToRenderStep("FlashlightFollow", Enum.RenderPriority.Camera.Value + 2, function()
+RunService:BindToRenderStep("FlashlightFollow", Enum.RenderPriority.Camera.Value + 2, function(dt)
 	local camera = workspace.CurrentCamera
-	if camera then lightPart.CFrame = safeEmitter(camera.CFrame,camera.CFrame * LIGHT_OFFSET) end
+	if camera then
+		-- the beam rides the hand (SprintController: lag on turns, breathing, fear tremor); centre springs back to the crosshair
+		local hands = camera:FindFirstChild('FakeHands'); local sway = hands and hands:GetAttribute('BeamSway')
+		lightPart.CFrame = safeEmitter(camera.CFrame, camera.CFrame * (typeof(sway) == 'CFrame' and sway or CFrame.identity) * LIGHT_OFFSET)
+	end
+ updateNearDim(dt)
  setLit(innerLight,on,player)
  setLit(outerLight,on,player)
+ local dreadK=dreadFactor();if dreadK<1 then innerLight.Brightness*=dreadK;outerLight.Brightness*=dreadK end
 	-- in first person we see the fake-hands flashlight (SprintController) instead of our real one
 	local character = player.Character
 	local handle = character and character:FindFirstChild("FlashlightHandle")

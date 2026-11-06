@@ -13,7 +13,7 @@ end
 local group=soundGroup('GameplaySFX',2.4)
 local uiGroup=soundGroup('GameplayUI',2.25)
 local folder=Instance.new('Folder');folder.Name='GameplaySFXPlayback';folder.Parent=SS
-local currentCount=0;local lastUI={};local lastVariant={};local rng=Random.new()
+local currentCount=0;local lastUI={};local lastVariant={};local bags={};local rng=Random.new()
 local Content=game:GetService('ContentProvider')
 local LOAD_TIMEOUT=8
 local fetchStatus={}
@@ -35,7 +35,7 @@ local fallback={
  ItemPickup='rbxassetid://9113837941',ItemRelease='rbxasset://sounds/action_jump_land.mp3',
  PlayerFootstep='rbxasset://sounds/action_footsteps_plastic.mp3',PlayerStoneFootstep='rbxasset://sounds/action_footsteps_plastic.mp3',
  UiClick='rbxassetid://9116725218',UiOpen='rbxassetid://9116725218',UiClose='rbxassetid://9116725218',UiError='rbxassetid://9116725218',
- FlashlightClick='rbxassetid://9116725218',SaleStart='rbxassetid://9116725218',SaleComplete='rbxassetid://9116725218',SaleCancelled='rbxassetid://9116725218',
+ FlashlightClick='rbxassetid://128570293170805',SaleStart='rbxassetid://9116725218',SaleComplete='rbxassetid://9116725218',SaleCancelled='rbxassetid://9116725218',
  RoundStart='rbxassetid://9116725218',RoundWin='rbxassetid://9116725218',QuotaMet='rbxassetid://9116725218',
  CartRoll='rbxassetid://9119088927',Spit='rbxasset://sounds/impact_water.mp3',FrostingSquish='rbxasset://sounds/impact_water.mp3',
  SprintBreath='rbxassetid://9113984056',MonsterNotice='rbxassetid://9113973128',MonsterRush='rbxassetid://9113980319',
@@ -70,8 +70,16 @@ function M.Play(key,origin,options)
  if prior and prior.Parent then return prior end
  local asset=cue
  if cue.pool and #cue.pool>0 then
-  local index=rng:NextInteger(1,#cue.pool)
-  if #cue.pool>1 and index==lastVariant[key]then index=index%#cue.pool+1 end
+  -- Shuffle bag (owner 2026-10-25): every sound in a pool plays once, in random order, before any repeats; a new
+  -- round never opens with the one that just played.
+  local bag=bags[key]
+  if not bag or #bag==0 then
+   bag={};for i=1,#cue.pool do bag[i]=i end
+   for i=#bag,2,-1 do local j=rng:NextInteger(1,i);bag[i],bag[j]=bag[j],bag[i]end
+   if #bag>1 and bag[#bag]==lastVariant[key]then bag[#bag],bag[1]=bag[1],bag[#bag]end
+   bags[key]=bag
+  end
+  local index=table.remove(bag)
   lastVariant[key]=index;asset=cue.pool[index]
  end
  local originalAsset=asset.id

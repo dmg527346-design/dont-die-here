@@ -44,6 +44,69 @@ function M.Cart(parent,cf)
  for _,x in ipairs(m:GetDescendants()) do if x:IsA('BasePart') then x.CollisionGroup='RecoveryCart';x.CanCollide=x.Name=='Chassis' or x.Name=='BasketFloor' or x.Name=='BasketSide' or x.Name=='BasketEnd' or x.Name=='Wheel' end end
  return m,label
 end
+-- RoadTripStickers (WorldB 2026-10-27): the run's stickers on the van board (server-built SurfaceGuis, the same for every player).
+-- 10 slots per sheet (5 x 2, under the push-pins); a full sheet turns over on the next clear. The slot after the last
+-- sticker shows a dashed 'LV n ?'. Plaque: run haul (sum of every cleared level's sale) and map types stickered k/N.
+local STICKER_STYLE={Mansion={'MANSION',Color3.fromRGB(138,92,245)},Dungeon={'DUNGEON',Color3.fromRGB(122,130,146)},Birthday={'PARTY',Color3.fromRGB(245,144,182)},
+ Mall={'MALL',Color3.fromRGB(66,201,240)},Cruise={'CRUISE',Color3.fromRGB(61,132,245)},Hospital={'HOSPITAL',Color3.fromRGB(79,177,84)},
+ Hotel={'HOTEL',Color3.fromRGB(245,186,34)},School={'SCHOOL',Color3.fromRGB(240,138,46)}}
+local STICKER_X,STICKER_Y={100,320,540,760,980},{186,506} -- slot centres on the 1080 x 660 canvas (200 px per stud)
+local INK_DARK=Color3.fromRGB(14,12,22)
+function M.StickerBoard(van,stickers,fresh,kindCount)
+ local board=van:FindFirstChild('RoadTripStickers',true)
+ local face=board and board:FindFirstChild('StickerFace');local plaque=board and board:FindFirstChild('StickerPlaque')
+ if not face or not plaque then return end
+ local old=face:FindFirstChild('Stickers');if old then old:Destroy()end
+ old=plaque:FindFirstChild('Plaque');if old then old:Destroy()end
+ local function surface(parent,name,canvas)
+  local g=Instance.new('SurfaceGui');g.Name=name;g.Face=Enum.NormalId.Front;g.SizingMode=Enum.SurfaceGuiSizingMode.FixedSize
+  g.CanvasSize=canvas;g.LightInfluence=.35;g.MaxDistance=70;g.Parent=parent;return g
+ end
+ local function words(parent,name,value,pos,size,color,max,outline)
+  local t=Instance.new('TextLabel');t.Name=name;t.BackgroundTransparency=1;t.Position=pos;t.Size=size;t.Font=Enum.Font.FredokaOne
+  t.TextScaled=true;t.Text=value;t.TextColor3=color;t.Parent=parent
+  local c=Instance.new('UITextSizeConstraint');c.MaxTextSize=max;c.Parent=t
+  if outline then local s=Instance.new('UIStroke');s.Color=INK_DARK;s.Thickness=3;s.ApplyStrokeMode=Enum.ApplyStrokeMode.Contextual;s.Parent=t end
+  return t
+ end
+ local gui=surface(face,'Stickers',Vector2.new(1080,660))
+ local n=#stickers;local sheet=math.floor(math.max(n-1,0)/10) -- the sheet holding the newest sticker
+ for slot=1,10 do
+  local index=sheet*10+slot;local s=stickers[index]
+  if s or index==n+1 then
+   local f=Instance.new('Frame');f.Name='Sticker'..index;f.AnchorPoint=Vector2.new(.5,.5)
+   f.Position=UDim2.fromOffset(STICKER_X[(slot-1)%5+1],STICKER_Y[(slot-1)//5+1]);f.Size=UDim2.fromOffset(186,170);f.Parent=gui
+   local corner=Instance.new('UICorner');corner.CornerRadius=UDim.new(0,38);corner.Parent=f
+   local rim=Instance.new('UIStroke');rim.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;rim.Parent=f
+   if s then
+    local style=STICKER_STYLE[s.k]or{tostring(s.k):upper(),Color3.fromRGB(190,190,200)}
+    f.BackgroundColor3=style[2];f.Rotation=(index*37)%11-5 -- slightly crooked, fixed per slot: stuck on by hand
+    rim.Color=Color3.fromRGB(250,248,240);rim.Thickness=8
+    if s.g>=3 then -- gold foil: the perfect 3/3 clear
+     rim.Color=Color3.fromRGB(246,206,104);rim.Thickness=10
+     local shine=Instance.new('UIGradient');shine.Rotation=35
+     shine.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.new(1,1,1)),ColorSequenceKeypoint.new(.45,Color3.fromRGB(255,240,170)),ColorSequenceKeypoint.new(1,Color3.new(1,1,1))});shine.Parent=f
+    end
+    words(f,'Map',style[1],UDim2.fromScale(.06,.1),UDim2.fromScale(.88,.34),Color3.new(1,1,1),48,true)
+    words(f,'Level','LV '..s.l,UDim2.fromScale(.06,.44),UDim2.fromScale(.88,.24),Color3.fromRGB(255,244,214),34,true)
+    for g=1,3 do -- the recap's gems: cleared (green), big haul (gold), nobody went down (gold)
+     local gem=Instance.new('Frame');gem.Name='Gem'..g;gem.AnchorPoint=Vector2.new(.5,.5);gem.Position=UDim2.fromScale(.5+(g-2)*.24,.82);gem.Size=UDim2.fromOffset(24,24);gem.Rotation=45
+     gem.BackgroundColor3=g<=s.g and(g==1 and Color3.fromRGB(167,202,127)or Color3.fromRGB(246,206,104))or Color3.fromRGB(40,52,50);gem.Parent=f
+     local gs=Instance.new('UIStroke');gs.Color=Color3.fromRGB(8,18,22);gs.Thickness=3;gs.Parent=gem
+    end
+    if fresh and index==n then f:SetAttribute('Fresh',true)end
+   else -- the next sticker's empty spot
+    f.BackgroundColor3=INK_DARK;f.BackgroundTransparency=.82;rim.Color=Color3.fromRGB(244,236,210);rim.Thickness=4;rim.Transparency=.35
+    words(f,'Next','LV '..((stickers[n]and stickers[n].l or 0)+1)..'\n?',UDim2.fromScale(.06,.12),UDim2.fromScale(.88,.76),Color3.fromRGB(244,236,210),44,true)
+   end
+  end
+ end
+ local kinds,haul,seen=0,0,{}
+ for _,s in stickers do haul+=s.v or 0;if not seen[s.k]then seen[s.k]=true;kinds+=1 end end
+ local pg=surface(plaque,'Plaque',Vector2.new(540,84))
+ local line=n==0 and'ROAD TRIP · CLEAR A LEVEL FOR A STICKER'or('ROAD TRIP  $'..haul..'  ·  MAPS '..math.min(kinds,kindCount or 5)..'/'..(kindCount or 5)..(sheet>0 and('  ·  SHEET '..(sheet+1))or''))
+ words(pg,'Title',line,UDim2.fromScale(.03,.08),UDim2.fromScale(.94,.84),Color3.fromRGB(31,55,53),40,false)
+end
 function M.Van(parent,entrance,exteriorZ)
  local rearZ=math.max(exteriorZ or entrance.Z,entrance.Z)+12
  local cf=CFrame.new(entrance.X,entrance.Y-.3,rearZ+25)
@@ -53,14 +116,65 @@ function M.Van(parent,entrance,exteriorZ)
  local endZ=cf.Position.Z+29;local startZ=entrance.Z-1
  local apronEnd=rearZ-4
  -- Enclose the recovery courtyard; the central level entrance remains the only opening.
+ -- The entry panels start just past the outermost face of the level's end wall on each side: inside the
+ -- wall their faces shared its planes (wainscot, frame) and Z-fought.
+ local function wallFront(side)
+  local front=exteriorZ or entrance.Z;local map=workspace:FindFirstChild('Mansion')
+  if not map then return front end
+  local x0,x1=entrance.X+math.min(side*6,side*19),entrance.X+math.max(side*6,side*19)
+  for _,p in ipairs(map:GetDescendants())do
+   if p:IsA('BasePart')and p.Transparency<1 and p.Parent.Name~='Collision'then
+    local cf=p.CFrame
+    local ex=math.abs(cf.RightVector.X)*p.Size.X/2+math.abs(cf.UpVector.X)*p.Size.Y/2+math.abs(cf.LookVector.X)*p.Size.Z/2
+    local ez=math.abs(cf.RightVector.Z)*p.Size.X/2+math.abs(cf.UpVector.Z)*p.Size.Y/2+math.abs(cf.LookVector.Z)*p.Size.Z/2
+    local ey=math.abs(cf.RightVector.Y)*p.Size.X/2+math.abs(cf.UpVector.Y)*p.Size.Y/2+math.abs(cf.LookVector.Y)*p.Size.Z/2
+    local c=cf.Position
+    if c.X+ex>x0 and c.X-ex<x1 and c.Y+ey>entrance.Y and c.Y-ey<entrance.Y+16 and c.Z-ez<front+.5 and c.Z+ez>front-.5 and c.Z+ez<front+3 then
+     front=math.max(front,c.Z+ez)
+    end
+   end
+  end
+  return front
+ end
  for _,side in ipairs({-1,1}) do
-  part(m,'CourtyardBoundary',Vector3.new(.8,16,endZ-exteriorZ),CFrame.new(entrance.X+side*19,entrance.Y+7.95,(endZ+exteriorZ)/2),dark)
-  part(m,'EntryBoundary',Vector3.new(13,16,.8),CFrame.new(entrance.X+side*12.5,entrance.Y+7.95,exteriorZ+.4),dark)
+  local front=wallFront(side)+.02
+  part(m,'CourtyardBoundary',Vector3.new(.8,16,endZ-front),CFrame.new(entrance.X+side*19,entrance.Y+7.95,(endZ+front)/2),dark)
+  part(m,'EntryBoundary',Vector3.new(13,16,.8),CFrame.new(entrance.X+side*12.5,entrance.Y+7.95,front+.4),dark)
  end
  part(m,'CourtyardRearBoundary',Vector3.new(38,16,.8),CFrame.new(entrance.X,entrance.Y+7.95,endZ+.4),dark)
  part(m,'Apron',Vector3.new(38,.5,apronEnd-startZ),CFrame.new(entrance.X,entrance.Y-.3,(apronEnd+startZ)/2),Color3.fromRGB(50,53,52))
+ -- The apron sits above the level floor: a shallow ramp fitted to the measured floor removes the ledge at the exit for players and the cart.
+ local apronTop=entrance.Y-.05;local collision=workspace:FindFirstChild('Mansion')and workspace.Mansion:FindFirstChild('Collision')
+ local params=RaycastParams.new();params.RespectCanCollide=true
+ if collision then params.FilterType=Enum.RaycastFilterType.Include;params.FilterDescendantsInstances={collision}else params.FilterType=Enum.RaycastFilterType.Exclude;params.FilterDescendantsInstances={m}end
+ local floorHit=workspace:Raycast(Vector3.new(entrance.X,apronTop+3,startZ-2),Vector3.new(0,-8,0),params)
+ local drop=floorHit and apronTop-floorHit.Position.Y
+ if drop and drop>.05 and drop<1.5 then
+  local length=math.max(4,drop*9)
+  local ramp=Instance.new('WedgePart');ramp.Name='ApronRamp';ramp.Size=Vector3.new(38,drop,length);ramp.CFrame=CFrame.new(entrance.X,floorHit.Position.Y+drop/2,startZ-length/2)
+  ramp.Color=Color3.fromRGB(50,53,52);ramp.Material=Enum.Material.SmoothPlastic;ramp.Anchored=true;ramp.CanTouch=false;ramp.Parent=m
+ end
+ -- Owner 2026-10-25: starter-room furniture (a table) could stand on the apron's edge by the exit, and the cart
+ -- jammed on it leaving the van. Anything furniture that overlaps the apron is removed, with its collision proxy.
+ do
+  local apron=m:FindFirstChild('Apron');local mansion=workspace:FindFirstChild('Mansion')
+  if apron and mansion then
+   local box=OverlapParams.new();box.FilterType=Enum.RaycastFilterType.Include;box.FilterDescendantsInstances={mansion}
+   for _,p in workspace:GetPartBoundsInBox(apron.CFrame*CFrame.new(0,3.5,0),apron.Size+Vector3.new(3,6,3),box)do
+    if p.Parent then
+     local furniture=mansion:FindFirstChild('Furniture');local model=furniture and p:FindFirstAncestorOfClass('Model')
+     if model and model:IsDescendantOf(furniture)then while model.Parent~=furniture do model=model.Parent end;model:Destroy()
+     elseif p:GetAttribute('Furniture')==true then p:Destroy()end
+    end
+   end
+  end
+ end
  for _,side in ipairs({-1,1}) do part(m,'ApronShoulder',Vector3.new(7,.5,endZ-apronEnd),CFrame.new(entrance.X+side*15.5,entrance.Y-.3,(endZ+apronEnd)/2),Color3.fromRGB(50,53,52)) end
  part(m,'ApronFront',Vector3.new(24,.5,4),cf*CFrame.new(0,0,27),Color3.fromRGB(50,53,52))
+ -- Owner 2026-10-25: the cart's wheels snagged where the van floor, threshold, shoulders and apron meet at the rear
+ -- door (separate slabs, same height). One invisible deck .01 stud above them covers every seam out to the apron.
+ local deck=part(m,'ExitDeck',Vector3.new(38,.2,24),cf*CFrame.new(0,.16,-34),Color3.fromRGB(50,53,52))
+ deck.Transparency=1;deck.CastShadow=false;deck.CanQuery=false
  -- A quiet return landmark at the level exit, visible from the foyer without blocking it.
  local returnSign=part(m,'VanReturnSign',Vector3.new(6.4,1.5,.16),CFrame.new(entrance.X,entrance.Y+11.2,exteriorZ+.7),Color3.fromRGB(22,42,43),false)
  returnSign.CanQuery=false;returnSign.CastShadow=false
@@ -90,7 +204,8 @@ function M.Van(parent,entrance,exteriorZ)
  local label,gui=display(monitor,'QuotaDisplay','ANOMALY RECOVERY',Color3.fromRGB(171,221,189))
  for _,x in ipairs({-8,8}) do local screen=part(m,'ScanMonitor',Vector3.new(3,2,.3),cf*CFrame.new(x,5,16)*CFrame.Angles(0,-x*.025,0),dark,false);display(screen,'Scan','SIGNAL\nSCAN ACTIVE',Color3.fromRGB(116,166,149)) end
  for i=1,12 do part(m,'ConsoleButton',Vector3.new(.4,.12,.4),cf*CFrame.new(i*1.2-7.8,3.22,13.5),i%2==0 and amber or Color3.fromRGB(85,131,109),false) end
- for _,side in ipairs({-1,1}) do
+ -- Right wall only: the left wall stays clear under VanLeaderboard; GearShopServer dresses the right-wall crates.
+ for _,side in ipairs({1}) do
   part(m,'Bench',Vector3.new(2.3,1,12),cf*CFrame.new(side*9.7,1,3),trim)
   part(m,'BenchBack',Vector3.new(.4,2.5,12),cf*CFrame.new(side*10.8,2,3),dark)
   for i=1,4 do part(m,'EquipmentCrate',Vector3.new(1.6,1.5,2),cf*CFrame.new(side*10.4,4.8,-3+i*3),trim,false) end
@@ -121,6 +236,7 @@ function M.Van(parent,entrance,exteriorZ)
   end
   detail('LowerWallRail',Vector3.new(.18,.25,39),CFrame.new(side*11.3,1.9,-4),Color3.fromRGB(92,106,92))
   detail('CeilingConduit',Vector3.new(.2,.2,39),CFrame.new(side*10.9,11.7,-4),Color3.fromRGB(104,116,105))
+  if side==1 then -- the left wall (side -1) stays clear under VanLeaderboard: no bench or shelf there
   for _,z in ipairs({-1.5,2.5,6.5}) do
    detail('BenchCushion',Vector3.new(2.15,.35,3.7),CFrame.new(side*9.7,1.675,z),cushion)
    detail('BenchBackCushion',Vector3.new(.22,1.8,3.7),CFrame.new(side*10.48,2.35,z),cushion)
@@ -128,6 +244,7 @@ function M.Van(parent,entrance,exteriorZ)
   end
   detail('StorageShelf',Vector3.new(2.4,.16,12),CFrame.new(side*10.2,3.95,3),Color3.fromRGB(79,91,78))
   for _,z in ipairs({-1,5}) do detail('ShelfBracket',Vector3.new(.14,1.1,.14),CFrame.new(side*11.1,3.4,z),Color3.fromRGB(117,126,106),Enum.Material.Metal) end
+  end
   detail('AirVent',Vector3.new(.14,1.8,3),CFrame.new(side*11.27,9.1,-18),Color3.fromRGB(25,33,32))
   for y=8.45,9.75,.22 do detail('VentLouvre',Vector3.new(.12,.07,2.7),CFrame.new(side*11.15,y,-18),Color3.fromRGB(111,123,108)) end
  end
@@ -148,13 +265,35 @@ function M.Van(parent,entrance,exteriorZ)
  local CATS_OFFSET=CFrame.new(9.55,3.15,13.6) -- desk top y=3.15, front edge z=12.75, side edge x=10.5
  local catsTemplate=game:GetService('ServerStorage'):FindFirstChild('AlienCatsDecor')
  if catsTemplate then local cats=catsTemplate:Clone();cats:ScaleTo(1.3);cats:PivotTo(cf*CATS_OFFSET);cats.Parent=fittings end -- 30% bigger
+ -- ForecastBobble (WorldA): dashboard ghost between the keyboard and the radio unit, facing the aisle (-Z). OmenClient draws
+ -- its forecast sign and bobs its Head mesh. Decor only: anchored, no collision, no query.
+ local bobbleTemplate=game:GetService('ServerStorage'):FindFirstChild('ForecastBobbleDecor')
+ if bobbleTemplate then
+  local bobble=bobbleTemplate:Clone();bobble.Name='ForecastBobble'
+  for _,d in bobble:GetDescendants()do if d:IsA('BasePart')then d.Anchored=true;d.CanCollide=false;d.CanQuery=false;d.CanTouch=false end end
+  bobble:PivotTo(cf*CFrame.new(-9.3,3.15,13.6));bobble.Parent=fittings -- owner 2026-10-27: far right end of the desk (player's view), clear of the quota screen and radio
+ end
  for row=1,3 do for key=1,12 do detail('KeyboardKey',Vector3.new(.23,.06,.22),CFrame.new(-1.65+key*.26,3.33,12.85+row*.26),Color3.fromRGB(140,151,129)) end end
  detail('RadioUnit',Vector3.new(2.3,.9,1.3),CFrame.new(-6,3.6,14.5),Color3.fromRGB(27,35,33))
  for _,x in ipairs({-6.7,-5.3}) do local p=detail('RadioDial',Vector3.new(.18,.35,.35),CFrame.new(x,3.6,13.81)*CFrame.Angles(0,math.pi/2,0),Color3.fromRGB(154,164,139));p.Shape=Enum.PartType.Cylinder end
- local board=detail('SurveyBoard',Vector3.new(.2,4.2,6),CFrame.new(-11.18,7,-9)*CFrame.Angles(0,-math.pi/2,0),Color3.fromRGB(39,49,42))
- -- Board thickness is along local X; mount a front-facing plate separately.
- board.Size=Vector3.new(6,4.2,.2)
- display(board,'Survey','ANOMALY SURVEY\nSECTOR SCAN\nRECOVER / RETURN',Color3.fromRGB(160,186,152))
+ -- RoadTripStickers (WorldB 2026-10-27): the sticker board takes SurveyBoard's spot; the old plate stays as the fallback.
+ local stickerTemplate=game:GetService('ServerStorage'):FindFirstChild('RoadTripStickersDecor')
+ if stickerTemplate then
+  local sb=stickerTemplate:Clone();sb.Name='RoadTripStickers'
+  for _,d in sb:GetDescendants()do if d:IsA('BasePart')then d.Anchored=true;d.CanCollide=false;d.CanQuery=false;d.CanTouch=false end end
+  sb:PivotTo(cf*CFrame.new(-11.14,4.65,-9)*CFrame.Angles(0,-math.pi/2,0));sb.Parent=fittings
+  -- invisible plates just in front of the cork and the cream plaque carry the SurfaceGuis (rbxkit bbox, pivot = bottom centre)
+  local function plate(name,size,offset)
+   local p=Instance.new('Part');p.Name=name;p.Size=size;p.Transparency=1;p.Anchored=true;p.CanCollide=false;p.CanQuery=false;p.CanTouch=false;p.CastShadow=false
+   p.CFrame=sb:GetPivot()*offset;p.Parent=sb;return p
+  end
+  plate('StickerFace',Vector3.new(5.4,3.3,.05),CFrame.new(0,1.9,-.18))
+  plate('StickerPlaque',Vector3.new(2.7,.42,.05),CFrame.new(0,3.98,-.23))
+ else
+  local board=detail('SurveyBoard',Vector3.new(.2,4.2,6),CFrame.new(-11.18,7,-9)*CFrame.Angles(0,-math.pi/2,0),Color3.fromRGB(39,49,42))
+  board.Size=Vector3.new(6,4.2,.2) -- board thickness is along local X; a front-facing plate
+  display(board,'Survey','ANOMALY SURVEY\nSECTOR SCAN\nRECOVER / RETURN',Color3.fromRGB(160,186,152))
+ end
  local safety=detail('SafetyCabinet',Vector3.new(.5,2,1.8),CFrame.new(11.05,4.4,-13),Color3.fromRGB(126,62,47))
  detail('SafetyCrossA',Vector3.new(.06,.3,1),CFrame.new(10.76,4.4,-13),Color3.fromRGB(228,228,200))
  detail('SafetyCrossB',Vector3.new(.06,1,.3),CFrame.new(10.76,4.4,-13),Color3.fromRGB(228,228,200))
@@ -254,13 +393,29 @@ function M.Van(parent,entrance,exteriorZ)
   local prompt=Instance.new('ProximityPrompt');prompt.Name='QuestsRewardsPrompt';prompt.ObjectText='QUEST LOG';prompt.ActionText='Open'
   prompt.KeyboardKeyCode=Enum.KeyCode.E;prompt.GamepadKeyCode=Enum.KeyCode.ButtonX;prompt.HoldDuration=0;prompt.MaxActivationDistance=6;prompt.RequiresLineOfSight=true;prompt.ClickablePrompt=true;prompt.Exclusivity=Enum.ProximityPromptExclusivity.OnePerButton;prompt.Parent=p
  end
+ -- Leaderboard on the left wall above the crate bench (z 1..7, clear of the gear shelf labels): a blank face, LobbyWorldClient draws the same board as the lobby.
+ do
+  local bezel=detail('VanLeaderboardBezel',Vector3.new(6.2,4.6,.08),CFrame.new(-11.2,7.4,4)*CFrame.Angles(0,-math.pi/2,0),Color3.fromRGB(255,150,60),Enum.Material.Neon)
+  bezel.CastShadow=false
+  local board=detail('VanLeaderboard',Vector3.new(6,4.4,.24),CFrame.new(-11.05,7.4,4)*CFrame.Angles(0,-math.pi/2,0),Color3.fromRGB(14,16,22))
+  board.CanQuery=true;board.CanCollide=false
+ end
+ -- Masteries board on the right wall opposite SurveyBoard (z -11.3..-4.3, between the safety cabinet and the shelf):
+ -- a blank face, QuestLogClient draws each player's own masteries on it (same board as the lobby's MasteryBoard).
+ do
+  local bezel=detail('VanMasteryBoardBezel',Vector3.new(7.2,4.6,.08),CFrame.new(11.2,7.3,-7.8)*CFrame.Angles(0,math.pi/2,0),Color3.fromRGB(255,208,86),Enum.Material.Neon)
+  bezel.CastShadow=false
+  local board=detail('VanMasteryBoard',Vector3.new(7,4.4,.24),CFrame.new(11.05,7.3,-7.8)*CFrame.Angles(0,math.pi/2,0),Color3.fromRGB(14,16,22))
+  board.CanQuery=true;board.CanCollide=false
+  local glow=Instance.new('SurfaceLight');glow.Face=Enum.NormalId.Front;glow.Color=Color3.fromRGB(255,208,86);glow.Brightness=1;glow.Range=7;glow.Angle=100;glow.Parent=board
+ end
  -- Gift a Revive, Jumpscare Everyone and Instant Win are bought and used from the ROBUX panel (VanShopClient).
  m:SetAttribute('InteriorDetailVersion',2)
  m:SetAttribute('InteriorSize',Vector3.new(23,12,41));m:SetAttribute('ExteriorBoundary',exteriorZ or entrance.Z)
  -- CruiseExterior supplies the visible pier; preserve the existing support/collision.
  local map=workspace:FindFirstChild('Mansion')
  if map and map:GetAttribute('MapKind')=='Cruise' then
-  local hidden={CourtyardBoundary=true,EntryBoundary=true,CourtyardRearBoundary=true,Apron=true,ApronShoulder=true,ApronFront=true}
+  local hidden={CourtyardBoundary=true,EntryBoundary=true,CourtyardRearBoundary=true,Apron=true,ApronShoulder=true,ApronFront=true,ApronRamp=true}
   for _,part in ipairs(m:GetDescendants())do if part:IsA('BasePart')and hidden[part.Name]then
    part.Transparency=1;part.CastShadow=false
    for _,detail in ipairs(part:GetChildren())do if detail:IsA('Decal')or detail:IsA('Texture')then detail.Transparency=1 end end

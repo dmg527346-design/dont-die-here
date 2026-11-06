@@ -9,22 +9,22 @@ local function rarity(tokens,revives,instantWin)
  return instantWin>0 and 'legendary' or revives>=2 and 'epic' or (revives>=1 or tokens>=100) and 'rare' or 'common'
 end
 M.TimedSlots = {
- {id='5m',at=300,tokens=25,revives=0,instantWin=0},
- {id='15m',at=900,tokens=35,revives=0,instantWin=0},
- {id='30m',at=1800,tokens=45,revives=0,instantWin=0},
- {id='1h',at=3600,tokens=60,revives=1,instantWin=0},
- {id='2h',at=7200,tokens=80,revives=0,instantWin=0},
- {id='3h',at=10800,tokens=100,revives=1,instantWin=0},
- {id='4h',at=14400,tokens=120,revives=0,instantWin=0},
- {id='5h',at=18000,tokens=140,revives=1,instantWin=0},
- {id='6h',at=21600,tokens=200,revives=2,instantWin=1},
+ {id='5m',at=300,tokens=30,revives=0,instantWin=0},
+ {id='15m',at=900,tokens=45,revives=0,instantWin=0},
+ {id='30m',at=1800,tokens=55,revives=1,instantWin=0},
+ {id='2h',at=7200,tokens=100,revives=0,instantWin=0},
+ {id='3h',at=10800,tokens=120,revives=1,instantWin=0},
+ {id='4h',at=14400,tokens=145,revives=0,instantWin=0},
+ {id='5h',at=18000,tokens=170,revives=1,instantWin=0},
+ {id='6h',at=21600,tokens=240,revives=2,instantWin=1},
 }
 function M.Daily(streak, roll)
  streak=math.max(1,integer(streak))
  local day=(streak-1)%7+1
  local cycle=math.floor((streak-1)/7)
  local tokens=dailyTokens[day]+math.min(cycle,14)*5
- local revives=day==4 and 1 or day==7 and (1+math.min(math.floor(cycle/4),2)) or 0
+ -- Day 2 (the first return visit) also gives a revive token: a reason to come back tomorrow.
+ local revives=(day==2 or day==4) and 1 or day==7 and (1+math.min(math.floor(cycle/4),2)) or 0
  local instantWin=day==7 and type(roll)=='number' and roll>=1 and roll<=2500 and 1 or 0
  return {tokens=tokens,revives=revives,instantWin=instantWin,rarity=rarity(tokens,revives,instantWin)}
 end
@@ -38,6 +38,7 @@ end
 function M.DailyRoll(userId, utcDay)
  return (integer(userId)%10000*7919 + integer(utcDay)%10000*1049 + 3571)%10000+1
 end
+local claimIds={'5m','15m','30m','1h','2h','3h','4h','5h','6h'}
 function M.ProfileRewards(profile)
  local old=type(profile)=='table' and profile.VanRewards or nil
  local d={lastDailyDay=-1,streak=0,timedSessions={},timedFloor=0}
@@ -52,14 +53,14 @@ function M.ProfileRewards(profile)
  local s=old.timedSession
  if type(s)=='table' and type(s.id)=='string' and #s.id>0 and #s.id<=100 and type(s.owner)=='string' and #s.owner>0 and #s.owner<=100 then
   d.timedSession={id=s.id,owner=s.owner,ownerOpenedAt=integer(s.ownerOpenedAt),startedAt=integer(s.startedAt),playedSeconds=math.min(integer(s.playedSeconds),M.MaxSeconds),lastSeen=integer(s.lastSeen),claimed={}}
-  if type(s.claimed)=='table' then for _,slot in M.TimedSlots do if s.claimed[slot.id]==true then d.timedSession.claimed[slot.id]=true end end end
+  if type(s.claimed)=='table' then for _,id in claimIds do if s.claimed[id]==true then d.timedSession.claimed[id]=true end end end
  end
  if type(old.timedSessions)=='table' then
   for id,session in old.timedSessions do
    if type(id)=='string' and #id>0 and #id<=100 and type(session)=='table' then
     local entry={startedAt=integer(session.startedAt),claimed={}}
     if entry.startedAt>d.timedFloor then
-     if type(session.claimed)=='table' then for _,slot in M.TimedSlots do if session.claimed[slot.id]==true then entry.claimed[slot.id]=true end end end
+     if type(session.claimed)=='table' then for _,id in claimIds do if session.claimed[id]==true then entry.claimed[id]=true end end end
      d.timedSessions[id]=entry
     end
    end

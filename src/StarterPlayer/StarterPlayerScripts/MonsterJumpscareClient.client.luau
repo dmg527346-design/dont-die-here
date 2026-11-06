@@ -21,8 +21,13 @@ end
 local function start(token,monster,stamp,duration,party)
  stop()
  local char=player.Character
- if not char or not monster or not monster:IsA('Model') then return end
- if not Preferences.Get('Jumpscares')then
+ if not char then return end
+ -- A group scare can arrive before the monster has streamed in on this device (phones stream less): it still
+ -- plays, as the scare sound and a full-screen card, instead of silently doing nothing.
+ local missing=not monster or not monster:IsA('Model')
+ if missing and not party then return end
+ if missing or not Preferences.Get('Jumpscares')then
+  if missing and Preferences.Get('Jumpscares')then Audio.Play('MonsterJumpscare',nil,{duration=duration});Audio.Play('MonsterJumpscareHit',nil,{duration=duration})end
   local quiet=Instance.new('ScreenGui');quiet.Name='QuietCaught';quiet.IgnoreGuiInset=true;quiet.ScreenInsets=Enum.ScreenInsets.None;quiet.ResetOnSpawn=false;quiet.DisplayOrder=10000;quiet.Parent=player.PlayerGui
   local fade=Instance.new('Frame');fade.Size=UDim2.fromScale(1,1);fade.BackgroundColor3=Color3.fromRGB(9,18,22);fade.BorderSizePixel=0;fade.Parent=quiet
   local label=Instance.new('TextLabel');label.Size=UDim2.fromScale(1,1);label.BackgroundTransparency=1;label.Font=Enum.Font.FredokaOne;label.TextSize=28;label.TextColor3=Color3.fromRGB(244,236,210);label.Text=party and(party.nonlethal and'SKITTER HIT'or(party.sourceName..' scared everyone!'))or'YOU WERE CAUGHT';label.Parent=fade
@@ -34,11 +39,10 @@ local function start(token,monster,stamp,duration,party)
  local world=Instance.new('WorldModel');world.Parent=viewport
  local old=monster.Archivable;monster.Archivable=true;local clone=monster:Clone();monster.Archivable=old
  local kindName=monster:GetAttribute('CreatureKind')
- local authored=kindName=='Bellhop' or kindName=='Lantern' or kindName=='Neon' or kindName=='Skitter' -- Blender-built monsters keep their authored colours
+ local authored=kindName=='Bellhop' or kindName=='Lantern' or kindName=='Neon' or kindName=='Skitter' or kindName=='Mittens' or kindName=='Dancer' or kindName=='Yoyo' -- Blender-built monsters keep their authored colours
  for _,x in clone:GetDescendants() do
-  if x:IsA('LuaSourceContainer') or x:IsA('Sound') or x:IsA('ParticleEmitter') or x:IsA('Beam') or x:IsA('Trail') then x:Destroy()
-  elseif x:IsA('BasePart') then x.Anchored=true;x.CanCollide=false;x.CanTouch=false;x.CanQuery=false;if not authored then x.Color=Color3.fromRGB(36,29,38) end
-  elseif x:IsA('JointInstance') or x:IsA('WeldConstraint') then x:Destroy() end
+  if x:IsA('LuaSourceContainer') or x:IsA('Sound') or x:IsA('ParticleEmitter') or x:IsA('Beam') or x:IsA('Trail') or x:IsA('JointInstance') or x:IsA('WeldConstraint') then x:Destroy()
+  elseif x:IsA('BasePart') then x.Anchored=true;x.CanCollide=false;x.CanTouch=false;x.CanQuery=false;if not authored then x.Color=Color3.fromRGB(36,29,38) end end
  end
  clone.Parent=world;clone:PivotTo(CFrame.identity)
  local head=clone:FindFirstChild('Head') or clone:FindFirstChild('Torso')
